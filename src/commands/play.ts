@@ -14,10 +14,10 @@ export const playCommand: SlashCommand = {
     )
     .addStringOption((option) =>
       option
-        .setName("provider")
-        .setDescription("Provider de recherche (ignore si URL)")
+        .setName("source")
+        .setDescription("Source de recherche (ignoree si URL)")
         .addChoices(
-          { name: "Auto", value: "auto" },
+          { name: "Automatique", value: "auto" },
           { name: "YouTube Music", value: "youtube_music" },
           { name: "YouTube", value: "youtube" },
           { name: "SoundCloud", value: "soundcloud" },
@@ -28,7 +28,7 @@ export const playCommand: SlashCommand = {
     ),
   async execute(interaction, client) {
     const query = interaction.options.getString("query", true);
-    const provider = (interaction.options.getString("provider") ?? "auto") as ProviderMode;
+    const provider = (interaction.options.getString("source") ?? "auto") as ProviderMode;
 
     await interaction.deferReply();
     const result = await client.musicService.enqueue(interaction, query, provider);
@@ -42,16 +42,11 @@ export const playCommand: SlashCommand = {
       result,
       interaction.user.id,
       client.config.musicPanelEmoji,
-      panelState
+      panelState,
+      buildPlayModeInfo(query, provider)
     );
-    const modeInfo = buildPlayModeInfo(query, provider);
-
-    const summary = result.isPlaylist
-      ? `Playlist ajoutee: ${result.addedCount} piste(s).`
-      : `Ajoute a la file: ${result.firstTrackTitle}.`;
 
     await sendReply(interaction, {
-      content: `${summary}\n${modeInfo}`,
       embeds: [panel.embed],
       components: panel.components
     });
@@ -64,10 +59,10 @@ function buildPlayModeInfo(query: string, provider: ProviderMode): string {
   }
 
   if (provider === "auto") {
-    return "Recherche texte: provider automatique actif.";
+    return "Recherche texte: source automatique active.";
   }
 
-  return `Recherche texte: provider force sur ${formatProviderMode(provider)}.`;
+  return `Recherche texte: source forcee sur ${formatProviderMode(provider)}.`;
 }
 
 function isUrl(value: string): boolean {
@@ -89,6 +84,6 @@ function formatProviderMode(provider: ProviderMode): string {
     case "deezer":
       return "Deezer";
     default:
-      return "Auto";
+      return "Automatique";
   }
 }

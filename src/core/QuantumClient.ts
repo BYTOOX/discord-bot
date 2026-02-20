@@ -21,7 +21,8 @@ import { MusicService } from "../modules/music/MusicService";
 import {
   buildPanelComponents,
   disablePanelRows,
-  isMusicPanelAction
+  isMusicPanelAction,
+  withPanelStatus
 } from "../modules/music/MusicPanel";
 
 export class QuantumClient extends Client {
@@ -36,6 +37,7 @@ export class QuantumClient extends Client {
   public readonly lavalinkService: LavalinkService;
   public readonly musicService: MusicService;
   private eventHandlersBound = false;
+  private readonly panelBusyMessages = new Set<string>();
 
   public constructor(config: AppConfig, logger: Logger) {
     super({
@@ -72,6 +74,7 @@ export class QuantumClient extends Client {
       this.guildSettingsService,
       config.playerEmptyTimeoutMs,
       config.playerSelfDeaf,
+      config.youtubeFallbackSource,
       logger.child({ scope: "music" })
     );
   }
@@ -96,7 +99,7 @@ export class QuantumClient extends Client {
     this.once(Events.ClientReady, async (readyClient) => {
       this.logger.info(
         { username: readyClient.user.tag, guildCount: readyClient.guilds.cache.size },
-        "Discord client ready"
+        "Client Discord pret"
       );
 
       await this.musicService.initialize(readyClient.user.id, readyClient.user.username);
@@ -112,11 +115,11 @@ export class QuantumClient extends Client {
     });
 
     this.on(Events.Warn, (warning) => {
-      this.logger.warn({ warning }, "Discord client warning");
+      this.logger.warn({ warning }, "Avertissement client Discord");
     });
 
     this.on(Events.Error, (error) => {
-      this.logger.error({ err: error }, "Discord client error");
+      this.logger.error({ err: error }, "Erreur client Discord");
     });
 
     this.eventHandlersBound = true;
@@ -152,7 +155,7 @@ export class QuantumClient extends Client {
           guildId: interaction.guildId,
           userId: interaction.user.id
         },
-        "Command execution failed"
+        "Echec execution commande"
       );
       await sendReply(interaction, {
         content: `Erreur: ${message}`,
@@ -184,7 +187,16 @@ export class QuantumClient extends Client {
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      if (this.panelBusyMessages.has(interaction.message.id)) {
+        await interaction.reply({
+          content: "Une action est deja en cours sur ce panneau, reessaie dans une seconde.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      this.panelBusyMessages.add(interaction.message.id);
+      await interaction.deferUpdate();
       const result = await this.musicService.handlePanelAction(interaction);
 
       if (result.disablePanel) {
@@ -197,16 +209,16 @@ export class QuantumClient extends Client {
             }));
 
           await interaction.message.edit({
-            components: disablePanelRows(rows)
+            components: disablePanelRows(rows),
+            embeds: withPanelStatus(interaction.message.embeds, result.message)
           });
         }
       } else if (result.state) {
         await interaction.message.edit({
-          components: buildPanelComponents(result.state)
+          components: buildPanelComponents(result.state),
+          embeds: withPanelStatus(interaction.message.embeds, result.message)
         });
       }
-
-      await interaction.editReply({ content: result.message });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erreur bouton inattendue.";
       this.logger.error(
@@ -216,14 +228,16 @@ export class QuantumClient extends Client {
           guildId: interaction.guildId,
           userId: interaction.user.id
         },
-        "Button interaction failed"
+        "Echec interaction bouton"
       );
 
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: `Erreur: ${message}` });
+        await interaction.followUp({ content: `Erreur: ${message}`, ephemeral: true });
       } else {
         await interaction.reply({ content: `Erreur: ${message}`, ephemeral: true });
       }
+    } finally {
+      this.panelBusyMessages.delete(interaction.message.id);
     }
   }
 }

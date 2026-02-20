@@ -1,4 +1,11 @@
-﻿import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  type APIEmbed,
+  type Embed
+} from "discord.js";
 
 import { formatDuration } from "./trackHelpers";
 import type { EnqueueResult } from "./types";
@@ -35,7 +42,8 @@ export function buildPlayPanel(
   result: EnqueueResult,
   requestedById: string,
   emoji: string,
-  state: PanelState
+  state: PanelState,
+  modeInfo: string
 ): {
   embed: EmbedBuilder;
   components: ActionRowBuilder<ButtonBuilder>[];
@@ -67,6 +75,11 @@ export function buildPlayPanel(
         name: "Playlist detectee",
         value: result.playlistName ?? "Aucune",
         inline: true
+      },
+      {
+        name: "Mode",
+        value: modeInfo,
+        inline: false
       }
     )
     .setFooter({ text: "Controles rapides disponibles ci-dessous" });
@@ -86,11 +99,11 @@ export function buildPanelComponents(state: PanelState): ActionRowBuilder<Button
   const pauseEmoji = state.paused ? "\u{25B6}\u{FE0F}" : "\u{23EF}\u{FE0F}";
   const loopLabel =
     state.repeatMode === "off"
-      ? "Boucle:Off"
+      ? "Boucle:Arret"
       : state.repeatMode === "track"
         ? "Boucle:Piste"
         : "Boucle:File";
-  const autoplayLabel = state.autoplay ? "AutoPlay:On" : "AutoPlay:Off";
+  const autoplayLabel = state.autoplay ? "Lecture auto:Oui" : "Lecture auto:Non";
 
   const rowOne = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -110,7 +123,7 @@ export function buildPanelComponents(state: PanelState): ActionRowBuilder<Button
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.skip)
-      .setLabel("Skip")
+      .setLabel("Suivante")
       .setEmoji("\u{23ED}\u{FE0F}")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
@@ -137,7 +150,7 @@ export function buildPanelComponents(state: PanelState): ActionRowBuilder<Button
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.stop)
-      .setLabel("Stop")
+      .setLabel("Arret")
       .setEmoji("\u{23F9}\u{FE0F}")
       .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
@@ -175,6 +188,22 @@ export function disablePanelRows(
   }
 
   return convertedRows;
+}
+
+export function withPanelStatus(
+  embeds: ReadonlyArray<Embed | APIEmbed>,
+  status: string
+): EmbedBuilder[] {
+  const first = embeds[0];
+  if (!first) {
+    return [];
+  }
+
+  const safeStatus = status.replace(/\s+/g, " ").trim().slice(0, 180);
+  const builder = EmbedBuilder.from(first).setTimestamp(new Date());
+  const baseFooter = "Controles rapides disponibles ci-dessous";
+  builder.setFooter({ text: `${baseFooter} | Derniere action: ${safeStatus}`.slice(0, 2048) });
+  return [builder];
 }
 
 function formatProvider(provider: string): string {
