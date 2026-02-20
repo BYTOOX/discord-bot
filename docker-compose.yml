@@ -1,0 +1,38 @@
+services:
+  bot:
+    build: .
+    container_name: quantum-jukebox
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - lavalink
+    environment:
+      LAVALINK_HOST: lavalink
+    volumes:
+      - ./data:/app/data
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: quantum-lavalink
+    restart: unless-stopped
+    depends_on:
+      - yt-cipher
+    ports:
+      - "2333:2333"
+    environment:
+      _JAVA_OPTIONS: "-Xmx1G"
+      SERVER_PORT: "2333"
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      DEEZER_MASTER_DECRYPTION_KEY: ${DEEZER_MASTER_DECRYPTION_KEY:-}
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml
+
+  yt-cipher:
+    image: ghcr.io/kikkia/yt-cipher:master
+    container_name: quantum-yt-cipher
+    restart: unless-stopped
+    environment:
+      IGNORE_SCRIPT_REGION: "true"
