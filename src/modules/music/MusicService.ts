@@ -29,6 +29,7 @@ type FallbackSource = "scsearch" | "ytsearch" | "ytmsearch";
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
   private readonly fallbackGuard = new Set<string>();
+  private readonly fallbackInProgressGuilds = new Set<string>();
   private readonly recentTrackErrors = new Map<string, number>();
 
   public constructor(
@@ -563,9 +564,17 @@ export class MusicService {
       return;
     }
 
-    const fallbackAdded = await this.tryYoutubeFallback(player, track, message);
+    this.fallbackInProgressGuilds.add(player.guildId);
+    let fallbackAdded = false;
+    try {
+      fallbackAdded = await this.tryYoutubeFallback(player, track, message);
+    } finally {
+      this.fallbackInProgressGuilds.delete(player.guildId);
+    }
+
     if (!fallbackAdded) {
       this.scheduleForceAdvanceAfterTrackError(player.guildId, track);
+      await this.scheduleDestroyAfterTrackErrorIfIdle(player.guildId);
     }
   }
 
@@ -573,6 +582,14 @@ export class MusicService {
     try {
       const settings = await this.guildSettings.get(player.guildId);
       const hadRecentError = this.hasRecentTrackError(player.guildId);
+
+      if (this.fallbackInProgressGuilds.has(player.guildId)) {
+        this.logger.info(
+          { guildId: player.guildId },
+          "Fin de file ignoree: recuperation de secours en cours"
+        );
+        return;
+      }
 
       if (settings.autoplay && lastTrack) {
         const didAutoplay = await this.tryAutoplayFromLastTrack(player, lastTrack);
@@ -672,6 +689,24 @@ export class MusicService {
     }
 
     return false;
+  }
+
+  private async scheduleDestroyAfterTrackErrorIfIdle(guildId: string): Promise<void> {
+    const player = this.lavalink.manager.getPlayer(guildId);
+    if (!player) {
+      return;
+    }
+
+    const settings = await this.guildSettings.get(guildId);
+    if (settings.stayInVoice) {
+      return;
+    }
+
+    if (player.queue.current || player.queue.tracks.length > 0 || player.playing || player.paused) {
+      return;
+    }
+
+    this.scheduleDestroy(player);
   }
 
   private async tryAutoplayFromLastTrack(player: Player, lastTrack: QueueTrack): Promise<boolean> {
