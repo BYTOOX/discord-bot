@@ -1,0 +1,59 @@
+Project name: Quantum Jukebox
+
+Create a full visual identity pack for a futuristic Discord music bot inspired by Star Citizen.
+
+Tone and vibe:
+- premium, high-end, sci-fi, clean, tactical UI, aerospace engineering precision
+- not cartoonish, not childish, no meme style
+- sharp, modern, cinematic, trustworthy
+
+Core concept:
+- "Quantum Jukebox" is a modular music bot that travels through playlists like a ship traveling through quantum lanes
+- mix starship navigation aesthetics with advanced audio technology
+- visual metaphors: quantum route lines, holographic waveform rings, cockpit HUD overlays, orbital tracks, stellar map grids
+
+Color direction:
+- deep navy (#0A1020), carbon black (#0E0E12), steel gray (#4C566A)
+- accent cyan (#39D7FF), electric teal (#16F2C4), warm amber highlights (#F9B24B)
+- use subtle gradients and glow, avoid neon overload
+
+Typography style:
+- geometric sci-fi sans
+- uppercase labels for UI elements
+- compact technical microtext feel
+
+Main mascot/symbol idea:
+- a sleek starship-inspired audio core icon (fusion of music wave + quantum drive ring)
+- no human character
+- logo should work both detailed and minimal
+
+Deliverables to generate:
+1) Primary logo (transparent background)
+2) Alternate icon/avatar (square, Discord-ready)
+3) Wide hero banner for a bot website
+4) Discord server banner (center-safe composition)
+5) Minimal monochrome mark for watermark/favicon
+6) 3 background variants (dark HUD, star map, soft gradient with orbital lines)
+
+Composition guidance:
+- keep strong focal point centered for avatar/icon
+- for banners, keep text-safe area uncluttered in the middle
+- include layered depth: foreground HUD, mid waveform ring, distant stars
+- imply motion and speed (quantum jump effect) without chaos
+
+Optional text for mockups:
+- "Quantum Jukebox"
+- "High-End Modular Music Bot"
+- "Playlist Navigation. Reimagined."
+
+Rendering style:
+- ultra detailed digital illustration with crisp edges
+- realistic glow, volumetric light, subtle film grain
+- high contrast but readable
+- polished production-grade branding concept art
+
+Negative constraints:
+- no fantasy swords, no medieval motifs, no anime faces
+- no generic equalizer bars only; integrate audio motif into spacecraft language
+- avoid purple-dominant palettes
+
