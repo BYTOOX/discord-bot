@@ -23,6 +23,6 @@ export const autoplayCommand: SlashCommand = {
       explicitValue === null ? undefined : explicitValue
     );
 
-    await sendReply(interaction, `Autoplay ${result.enabled ? "active" : "desactive"}.`);
+    await sendReply(interaction, `Lecture auto ${result.enabled ? "activee" : "desactivee"}.`);
   }
 };

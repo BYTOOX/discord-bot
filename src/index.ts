@@ -14,7 +14,6 @@ async function bootstrap(): Promise<void> {
 
 bootstrap().catch((error) => {
   // eslint-disable-next-line no-console
-  console.error("Fatal startup error", error);
+  console.error("Erreur fatale au demarrage", error);
   process.exit(1);
 });
-

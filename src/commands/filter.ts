@@ -19,7 +19,7 @@ export const filterCommand: SlashCommand = {
     .addStringOption((option) =>
       option
         .setName("effect")
-        .setDescription("Preset de filtre")
+        .setDescription("Profil de filtre")
         .setRequired(true)
         .addChoices(...FILTER_CHOICES)
     ),

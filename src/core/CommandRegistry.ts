@@ -32,7 +32,7 @@ export class CommandRegistry {
     );
     this.logger.info(
       { guildId: this.config.discordGuildId, count: body.length },
-      "Slash commands published to guild"
+      "Commandes slash publiees sur le serveur"
     );
   }
 }
