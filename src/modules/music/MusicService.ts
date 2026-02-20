@@ -24,6 +24,30 @@ const MAX_PLAYLIST_RESOLVE_PER_CALL = 150;
 const TRACK_ERROR_GRACE_PERIOD_MS = 90_000;
 const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
 const FALLBACK_GUARD_TTL_MS = 15 * 60 * 1000;
+const YOUTUBE_SEARCH_DEGRADED_TTL_MS = 10 * 60 * 1000;
+const FALLBACK_QUERY_MAX_LENGTH = 140;
+const SEARCH_QUERY_NOISE_WORDS = new Set([
+  "official",
+  "video",
+  "audio",
+  "lyrics",
+  "lyric",
+  "remix",
+  "live",
+  "clip",
+  "topic",
+  "version",
+  "hd",
+  "4k",
+  "8k",
+  "vf",
+  "vost",
+  "vostfr",
+  "trailer",
+  "teaser",
+  "bande",
+  "annonce"
+]);
 type FallbackSource = "scsearch" | "ytsearch" | "ytmsearch";
 
 export class MusicService {
@@ -31,6 +55,7 @@ export class MusicService {
   private readonly fallbackGuard = new Set<string>();
   private readonly fallbackInProgressGuilds = new Set<string>();
   private readonly recentTrackErrors = new Map<string, number>();
+  private readonly youtubeSearchDegradedUntil = new Map<string, number>();
 
   public constructor(
     private readonly lavalink: LavalinkService,
@@ -82,9 +107,13 @@ export class MusicService {
     const settings = await this.guildSettings.get(interaction.guildId);
     const player = await this.getOrCreatePlayer(interaction, voiceChannel, settings.volume);
     const resolution = this.providers.resolve(input, preferredProvider);
+    const searchQuery = this.getSearchQueryWithYoutubeDegradation(
+      interaction.guildId,
+      resolution.searchQuery as SearchQuery
+    );
 
     const result = await player.search(
-      resolution.searchQuery as SearchQuery,
+      searchQuery,
       this.asRequester(interaction)
     );
 
@@ -564,6 +593,13 @@ export class MusicService {
       return;
     }
 
+    if (
+      this.isYoutubeSource(track.info.sourceName) &&
+      this.isHardYoutubePlaybackFailure(message)
+    ) {
+      this.activateYoutubeSearchDegradedMode(player.guildId);
+    }
+
     this.fallbackInProgressGuilds.add(player.guildId);
     let fallbackAdded = false;
     try {
@@ -640,51 +676,53 @@ export class MusicService {
     this.fallbackGuard.add(fallbackKey);
     setTimeout(() => this.fallbackGuard.delete(fallbackKey), FALLBACK_GUARD_TTL_MS);
 
-    const query = `${track.info.title ?? ""} ${track.info.author ?? ""}`.trim();
-    if (!query) {
+    const queryVariants = this.getFallbackQueryVariants(track);
+    if (queryVariants.length === 0) {
       return false;
     }
 
-    const fallbackSources = [
-      ...new Set<FallbackSource>([this.youtubeFallbackSource, "scsearch", "ytsearch"])
-    ];
+    const hardYoutubeFailure = this.isHardYoutubePlaybackFailure(message);
+    const fallbackSources = this.getFallbackSources(hardYoutubeFailure);
+
     for (const source of fallbackSources) {
-      try {
-        const search = await player.search(
-          {
-            query,
-            source
-          },
-          { id: "fallback", username: "FallbackAuto" }
-        );
-        const replacement =
-          search.tracks.find(
-            (candidate) => candidate.info.identifier !== track.info.identifier
-          ) ?? search.tracks[0];
-        if (!replacement) {
-          continue;
-        }
+      for (const query of queryVariants) {
+        try {
+          const search = await player.search(
+            {
+              query,
+              source
+            },
+            { id: "fallback", username: "FallbackAuto" }
+          );
+          const replacement = this.pickBestFallbackCandidate(
+            search.tracks as Track[],
+            track,
+            hardYoutubeFailure
+          );
+          if (!replacement) {
+            continue;
+          }
 
-        await player.queue.add(replacement as Track, 0);
-        if (!player.playing && !player.paused) {
-          await player.play();
-        }
+          await player.queue.add(replacement as Track, 0);
+          await this.resumeAfterFallbackReplacement(player, track);
 
-        this.logger.warn(
-          {
-            guildId: player.guildId,
-            failedTrack: track.info.title,
-            replacementTrack: replacement.info.title,
-            source
-          },
-          "Piste de secours ajoutee apres echec YouTube"
-        );
-        return true;
-      } catch (error) {
-        this.logger.warn(
-          { err: error, guildId: player.guildId, source },
-          "Source de secours indisponible"
-        );
+          this.logger.warn(
+            {
+              guildId: player.guildId,
+              failedTrack: track.info.title,
+              replacementTrack: replacement.info.title,
+              source,
+              query
+            },
+            "Piste de secours ajoutee apres echec YouTube"
+          );
+          return true;
+        } catch (error) {
+          this.logger.warn(
+            { err: error, guildId: player.guildId, source, query },
+            "Source de secours indisponible"
+          );
+        }
       }
     }
 
@@ -715,7 +753,9 @@ export class MusicService {
       return false;
     }
 
-    const autoplaySources: FallbackSource[] = ["ytmsearch", "ytsearch", "scsearch"];
+    const autoplaySources: FallbackSource[] = this.isYoutubeSearchDegradedActive(player.guildId)
+      ? ["scsearch", "ytmsearch", "ytsearch"]
+      : ["ytmsearch", "ytsearch", "scsearch"];
     for (const source of autoplaySources) {
       try {
         const search = await player.search(
@@ -813,6 +853,262 @@ export class MusicService {
     }
 
     return Date.now() - lastErrorAt <= TRACK_ERROR_GRACE_PERIOD_MS;
+  }
+
+  private getSearchQueryWithYoutubeDegradation(
+    guildId: string,
+    searchQuery: SearchQuery
+  ): SearchQuery {
+    const source = this.getSearchSource(searchQuery);
+    if (!this.isYoutubeSearchSource(source)) {
+      return searchQuery;
+    }
+
+    if (!this.isYoutubeSearchDegradedActive(guildId)) {
+      return searchQuery;
+    }
+
+    return this.withSearchSource(searchQuery, "scsearch");
+  }
+
+  private activateYoutubeSearchDegradedMode(guildId: string): void {
+    const now = Date.now();
+    const current = this.youtubeSearchDegradedUntil.get(guildId);
+    const until = now + YOUTUBE_SEARCH_DEGRADED_TTL_MS;
+
+    this.youtubeSearchDegradedUntil.set(guildId, until);
+    if (current && current > now) {
+      return;
+    }
+
+    this.logger.warn(
+      { guildId, durationMs: YOUTUBE_SEARCH_DEGRADED_TTL_MS },
+      "Mode degrade YouTube active: recherches texte routees vers SoundCloud"
+    );
+  }
+
+  private isYoutubeSearchDegradedActive(guildId: string): boolean {
+    const degradedUntil = this.youtubeSearchDegradedUntil.get(guildId);
+    if (!degradedUntil) {
+      return false;
+    }
+
+    if (Date.now() <= degradedUntil) {
+      return true;
+    }
+
+    this.youtubeSearchDegradedUntil.delete(guildId);
+    return false;
+  }
+
+  private getSearchSource(searchQuery: SearchQuery): string | null {
+    if (typeof searchQuery === "string") {
+      return null;
+    }
+
+    const candidate = (searchQuery as { source?: unknown }).source;
+    if (typeof candidate !== "string") {
+      return null;
+    }
+
+    return candidate.toLowerCase();
+  }
+
+  private withSearchSource(searchQuery: SearchQuery, source: FallbackSource): SearchQuery {
+    if (typeof searchQuery === "string") {
+      return { query: searchQuery, source } as SearchQuery;
+    }
+
+    return {
+      ...(searchQuery as Record<string, unknown>),
+      source
+    } as SearchQuery;
+  }
+
+  private isYoutubeSearchSource(source: string | null): source is "ytsearch" | "ytmsearch" {
+    return source === "ytsearch" || source === "ytmsearch";
+  }
+
+  private getFallbackSources(hardYoutubeFailure: boolean): FallbackSource[] {
+    if (hardYoutubeFailure) {
+      return ["scsearch"];
+    }
+
+    return [...new Set<FallbackSource>([this.youtubeFallbackSource, "scsearch", "ytsearch"])];
+  }
+
+  private getFallbackQueryVariants(track: QueueTrack): string[] {
+    const title = track.info.title?.trim() ?? "";
+    const author = track.info.author?.trim() ?? "";
+    const combined = `${title} ${author}`.trim();
+    if (!combined) {
+      return [];
+    }
+
+    const normalizedTitle = this.normalizeSearchText(title);
+    const normalizedAuthor = this.normalizeSearchText(author);
+    const normalizedCombined = `${normalizedTitle} ${normalizedAuthor}`.trim();
+    const compactTitle = this.stripNoiseWords(normalizedTitle);
+    const compactCombined = this.stripNoiseWords(normalizedCombined);
+
+    return [...new Set([combined, normalizedCombined, compactCombined, compactTitle, normalizedTitle])]
+      .map((candidate) => candidate.trim().slice(0, FALLBACK_QUERY_MAX_LENGTH))
+      .filter((candidate) => candidate.length > 2);
+  }
+
+  private normalizeSearchText(value: string): string {
+    return value
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private stripNoiseWords(value: string): string {
+    return value
+      .split(/\s+/)
+      .filter((token) => !SEARCH_QUERY_NOISE_WORDS.has(token.toLowerCase()))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  private pickBestFallbackCandidate(
+    candidates: Track[],
+    failedTrack: QueueTrack,
+    avoidYoutubeCandidates: boolean
+  ): Track | null {
+    const withoutSelf = candidates.filter(
+      (candidate) => candidate.info.identifier !== failedTrack.info.identifier
+    );
+    const filtered = avoidYoutubeCandidates
+      ? withoutSelf.filter((candidate) => !this.isYoutubeSource(candidate.info.sourceName))
+      : withoutSelf;
+
+    const usable = filtered.length > 0 ? filtered : withoutSelf;
+    if (usable.length === 0) {
+      return null;
+    }
+
+    let bestTrack: Track | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const candidate of usable) {
+      const score = this.scoreFallbackCandidate(candidate, failedTrack);
+      if (score <= bestScore) {
+        continue;
+      }
+
+      bestScore = score;
+      bestTrack = candidate;
+    }
+
+    return bestTrack ?? usable[0] ?? null;
+  }
+
+  private scoreFallbackCandidate(candidate: Track, failedTrack: QueueTrack): number {
+    const failedTitle = this.stripNoiseWords(this.normalizeSearchText(failedTrack.info.title ?? ""));
+    const failedAuthor = this.stripNoiseWords(this.normalizeSearchText(failedTrack.info.author ?? ""));
+    const candidateTitle = this.stripNoiseWords(this.normalizeSearchText(candidate.info.title ?? ""));
+    const candidateAuthor = this.stripNoiseWords(this.normalizeSearchText(candidate.info.author ?? ""));
+
+    const titleScore = this.tokenOverlapRatio(candidateTitle, failedTitle) * 10;
+    const authorScore = this.tokenOverlapRatio(candidateAuthor, failedAuthor) * 6;
+    const durationScore = this.getDurationSimilarityScore(
+      candidate.info.duration,
+      failedTrack.info.duration
+    );
+    const sourceScore = this.isYoutubeSource(candidate.info.sourceName) ? 0 : 2;
+
+    return titleScore + authorScore + durationScore + sourceScore;
+  }
+
+  private tokenOverlapRatio(left: string, right: string): number {
+    if (!left || !right) {
+      return 0;
+    }
+
+    const leftTokens = new Set(left.split(/\s+/));
+    const rightTokens = new Set(right.split(/\s+/));
+    if (leftTokens.size === 0 || rightTokens.size === 0) {
+      return 0;
+    }
+
+    let sharedCount = 0;
+    for (const token of leftTokens) {
+      if (!rightTokens.has(token)) {
+        continue;
+      }
+
+      sharedCount += 1;
+    }
+
+    return sharedCount / Math.max(leftTokens.size, rightTokens.size);
+  }
+
+  private getDurationSimilarityScore(
+    candidateDurationMs: number | undefined,
+    failedDurationMs: number | undefined
+  ): number {
+    if (!candidateDurationMs || !failedDurationMs) {
+      return 0;
+    }
+
+    const delta = Math.abs(candidateDurationMs - failedDurationMs);
+    const ratio = delta / Math.max(candidateDurationMs, failedDurationMs);
+    if (ratio <= 0.05) {
+      return 3;
+    }
+
+    if (ratio <= 0.15) {
+      return 2;
+    }
+
+    if (ratio <= 0.3) {
+      return 1;
+    }
+
+    return 0;
+  }
+
+  private async resumeAfterFallbackReplacement(
+    player: Player,
+    failedTrack: QueueTrack
+  ): Promise<void> {
+    const current = player.queue.current;
+    if (
+      current &&
+      this.isSameTrack(
+        current as QueueTrack,
+        failedTrack.info.identifier ?? null,
+        failedTrack.info.title ?? null,
+        failedTrack.info.author ?? null
+      )
+    ) {
+      await player.skip();
+      return;
+    }
+
+    if (!player.playing && !player.paused) {
+      await player.play();
+    }
+  }
+
+  private isHardYoutubePlaybackFailure(message: string): boolean {
+    const normalizedMessage = message.toLowerCase();
+    return (
+      normalizedMessage.includes("all clients failed") ||
+      normalizedMessage.includes("status code: 403") ||
+      normalizedMessage.includes("expected decoding to halt") ||
+      normalizedMessage.includes("decoding the track") ||
+      normalizedMessage.includes("video player configuration error") ||
+      normalizedMessage.includes("requires login")
+    );
+  }
+
+  private isYoutubeSource(sourceName: string | undefined): boolean {
+    return sourceName?.toLowerCase().includes("youtube") ?? false;
   }
 
   private async getOrCreatePlayer(
@@ -1008,19 +1304,13 @@ export class MusicService {
   }
 
   private shouldTryYoutubeFallback(sourceName: string | undefined, message: string): boolean {
-    if (!sourceName?.toLowerCase().includes("youtube")) {
+    if (!this.isYoutubeSource(sourceName)) {
       return false;
     }
 
-    const normalizedMessage = message.toLowerCase();
     return (
-      normalizedMessage.includes("all clients failed") ||
-      normalizedMessage.includes("must find sig function") ||
-      normalizedMessage.includes("requires login") ||
-      normalizedMessage.includes("status code: 403") ||
-      normalizedMessage.includes("decoding the track") ||
-      normalizedMessage.includes("expected decoding to halt") ||
-      normalizedMessage.includes("video player configuration error")
+      this.isHardYoutubePlaybackFailure(message) ||
+      message.toLowerCase().includes("must find sig function")
     );
   }
 
