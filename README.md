@@ -91,5 +91,6 @@ docker compose up -d --build
 
 - Spotify/Apple/Deezer playback depends on Lavalink plugin support and credentials; direct audio is not streamed from those services, tracks are resolved to playable sources.
 - YouTube playback uses `yt-cipher` through `remoteCipher` to reduce breakages caused by frequent player-script changes.
+- `YOUTUBE_FALLBACK_SOURCE` controls which search source is tried first when a YouTube track fails (`scsearch`, `ytsearch`, `ytmsearch`).
 - Commands are registered in `DISCORD_GUILD_ID` only (optimized for one-server deployment).
 - `DJ_ROLE_IDS` accepts comma-separated role ids.

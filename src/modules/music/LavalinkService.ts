@@ -31,9 +31,14 @@ export class LavalinkService {
       autoMove: true,
       playerOptions: {
         defaultSearchPlatform: "ytmsearch",
+        maxErrorsPerTime: {
+          threshold: 120_000,
+          maxAmount: 12
+        },
         onDisconnect: {
+          destroyPlayer: false,
           autoReconnect: true,
-          autoReconnectOnlyWithTracks: true
+          autoReconnectOnlyWithTracks: false
         }
       }
     });
@@ -48,7 +53,7 @@ export class LavalinkService {
 
     await this.manager.init({ id: clientId, username });
     this.initialized = true;
-    this.logger.info("Lavalink manager initialized");
+    this.logger.info("Gestionnaire Lavalink initialise");
   }
 
   public async forwardRawEvent(payload: unknown): Promise<void> {
@@ -57,20 +62,23 @@ export class LavalinkService {
 
   private bindManagerEvents(): void {
     this.manager.nodeManager.on("connect", (node) => {
-      this.logger.info({ nodeId: node.options.id, host: node.options.host }, "Lavalink node connected");
+      this.logger.info(
+        { nodeId: node.options.id, host: node.options.host },
+        "Noeud Lavalink connecte"
+      );
     });
 
     this.manager.nodeManager.on("disconnect", (node, reason) => {
       this.logger.warn(
         { nodeId: node.options.id, host: node.options.host, reason },
-        "Lavalink node disconnected"
+        "Noeud Lavalink deconnecte"
       );
     });
 
     this.manager.nodeManager.on("reconnecting", (node) => {
       this.logger.warn(
         { nodeId: node.options.id, host: node.options.host },
-        "Lavalink node reconnecting"
+        "Noeud Lavalink en reconnexion"
       );
     });
 
@@ -82,7 +90,7 @@ export class LavalinkService {
           err: error,
           payload
         },
-        "Lavalink node error"
+        "Erreur noeud Lavalink"
       );
     });
 
@@ -92,7 +100,7 @@ export class LavalinkService {
       }
       this.logger.info(
         { guildId: player.guildId, title: track.info.title, author: track.info.author },
-        "Track started"
+        "Piste demarree"
       );
     });
 
@@ -103,7 +111,7 @@ export class LavalinkService {
           title: track?.info.title,
           message: payload.exception?.message
         },
-        "Track error"
+        "Erreur de piste"
       );
     });
   }

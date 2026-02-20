@@ -21,10 +21,15 @@ import { displayTrack, formatDuration, toPlaylistTrackInput } from "./trackHelpe
 import type { EnqueueResult, QueueTrack } from "./types";
 
 const MAX_PLAYLIST_RESOLVE_PER_CALL = 150;
+const TRACK_ERROR_GRACE_PERIOD_MS = 90_000;
+const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
+const FALLBACK_GUARD_TTL_MS = 15 * 60 * 1000;
+type FallbackSource = "scsearch" | "ytsearch" | "ytmsearch";
 
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
   private readonly fallbackGuard = new Set<string>();
+  private readonly recentTrackErrors = new Map<string, number>();
 
   public constructor(
     private readonly lavalink: LavalinkService,
@@ -33,6 +38,7 @@ export class MusicService {
     private readonly guildSettings: GuildSettingsService,
     private readonly emptyDestroyTimeoutMs: number,
     private readonly selfDeaf: boolean,
+    private readonly youtubeFallbackSource: FallbackSource,
     private readonly logger: Logger
   ) {
     this.bindAutoplayHandler();
@@ -437,12 +443,12 @@ export class MusicService {
         const nowPlaying = player.queue.current;
         if (!nowPlaying) {
           return {
-            message: "Piste skippee. La file est maintenant vide.",
+            message: "Piste passee. La file est maintenant vide.",
             state: await this.getPanelState(guildId)
           };
         }
         return {
-          message: `Piste skippee. En cours: ${displayTrack(nowPlaying)}.`,
+          message: `Piste passee. En cours: ${displayTrack(nowPlaying)}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -469,12 +475,12 @@ export class MusicService {
         const nextMode = this.nextRepeatMode(player.repeatMode);
         await player.setRepeatMode(nextMode);
         const labels: Record<"off" | "track" | "queue", string> = {
-          off: "off",
+          off: "desactivee",
           track: "piste",
           queue: "file"
         };
         return {
-          message: `Mode boucle: ${labels[nextMode]}.`,
+          message: `Boucle ${labels[nextMode]}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -482,7 +488,7 @@ export class MusicService {
       case PANEL_BUTTONS.autoplay: {
         const result = await this.setAutoplay(guildId);
         return {
-          message: `Autoplay ${result.enabled ? "active" : "desactive"}.`,
+          message: `Lecture auto ${result.enabled ? "activee" : "desactivee"}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -528,42 +534,118 @@ export class MusicService {
   private bindAutoplayHandler(): void {
     this.lavalink.manager.on("trackStart", (player) => {
       this.clearPendingDestroy(player.guildId);
+      this.recentTrackErrors.delete(player.guildId);
     });
 
-    this.lavalink.manager.on("trackError", async (player, track, payload) => {
+    this.lavalink.manager.on("trackError", (player, track, payload) => {
+      const errorMessage = payload.exception?.message ?? "";
+      void this.handleTrackError(player, track as QueueTrack | undefined, errorMessage);
+    });
+
+    this.lavalink.manager.on("playerDestroy", (player) => {
+      this.clearPendingDestroy(player.guildId);
+      this.recentTrackErrors.delete(player.guildId);
+    });
+
+    this.lavalink.manager.on("queueEnd", (player, lastTrack) => {
+      void this.handleQueueEnd(player, lastTrack as QueueTrack | undefined);
+    });
+  }
+
+  private async handleTrackError(
+    player: Player,
+    track: QueueTrack | undefined,
+    message: string
+  ): Promise<void> {
+    this.markRecentTrackError(player.guildId);
+
+    if (!track) {
+      return;
+    }
+
+    const fallbackAdded = await this.tryYoutubeFallback(player, track, message);
+    if (!fallbackAdded) {
+      this.scheduleForceAdvanceAfterTrackError(player.guildId, track);
+    }
+  }
+
+  private async handleQueueEnd(player: Player, lastTrack: QueueTrack | undefined): Promise<void> {
+    try {
+      const settings = await this.guildSettings.get(player.guildId);
+      const hadRecentError = this.hasRecentTrackError(player.guildId);
+
+      if (settings.autoplay && lastTrack) {
+        const didAutoplay = await this.tryAutoplayFromLastTrack(player, lastTrack);
+        if (didAutoplay) {
+          return;
+        }
+      }
+
+      if (settings.stayInVoice) {
+        this.logger.info({ guildId: player.guildId }, "Fin de file, connexion vocale conservee");
+        return;
+      }
+
+      if (player.queue.current || player.queue.tracks.length > 0 || player.playing) {
+        this.logger.info(
+          { guildId: player.guildId },
+          "Fin de file ignoree: des pistes restent presentes sur le lecteur"
+        );
+        return;
+      }
+
+      this.scheduleDestroy(player);
+      if (hadRecentError) {
+        this.logger.warn(
+          { guildId: player.guildId },
+          "Fin de file detectee apres erreur recente, minuterie de destruction garde-fou activee"
+        );
+      }
+    } catch (error) {
+      this.logger.error({ err: error, guildId: player.guildId }, "Echec du gestionnaire de fin de file");
+    }
+  }
+
+  private async tryYoutubeFallback(
+    player: Player,
+    track: QueueTrack,
+    message: string
+  ): Promise<boolean> {
+    if (!this.shouldTryYoutubeFallback(track.info.sourceName, message)) {
+      return false;
+    }
+
+    const fallbackKey = `${player.guildId}:${track.info.identifier ?? track.info.title ?? "inconnu"}`;
+    if (this.fallbackGuard.has(fallbackKey)) {
+      return false;
+    }
+
+    this.fallbackGuard.add(fallbackKey);
+    setTimeout(() => this.fallbackGuard.delete(fallbackKey), FALLBACK_GUARD_TTL_MS);
+
+    const query = `${track.info.title ?? ""} ${track.info.author ?? ""}`.trim();
+    if (!query) {
+      return false;
+    }
+
+    const fallbackSources = [
+      ...new Set<FallbackSource>([this.youtubeFallbackSource, "scsearch", "ytsearch"])
+    ];
+    for (const source of fallbackSources) {
       try {
-        if (!track) {
-          return;
-        }
-
-        const message = payload.exception?.message ?? "";
-        if (!this.shouldTryYoutubeFallback(track.info.sourceName, message)) {
-          return;
-        }
-
-        const fallbackKey = `${player.guildId}:${track.info.identifier ?? track.info.title ?? "inconnu"}`;
-        if (this.fallbackGuard.has(fallbackKey)) {
-          return;
-        }
-
-        this.fallbackGuard.add(fallbackKey);
-        setTimeout(() => this.fallbackGuard.delete(fallbackKey), 15 * 60 * 1000);
-
-        const query = `${track.info.title ?? ""} ${track.info.author ?? ""}`.trim();
-        if (!query) {
-          return;
-        }
-
         const search = await player.search(
           {
             query,
-            source: "scsearch"
+            source
           },
           { id: "fallback", username: "FallbackAuto" }
         );
-        const replacement = search.tracks[0];
+        const replacement =
+          search.tracks.find(
+            (candidate) => candidate.info.identifier !== track.info.identifier
+          ) ?? search.tracks[0];
         if (!replacement) {
-          return;
+          continue;
         }
 
         await player.queue.add(replacement as Track, 0);
@@ -575,53 +657,127 @@ export class MusicService {
           {
             guildId: player.guildId,
             failedTrack: track.info.title,
-            replacementTrack: replacement.info.title
+            replacementTrack: replacement.info.title,
+            source
           },
-          "Fallback SoundCloud ajoute apres echec YouTube"
+          "Piste de secours ajoutee apres echec YouTube"
         );
+        return true;
       } catch (error) {
-        this.logger.warn({ err: error, guildId: player.guildId }, "Echec de fallback auto");
+        this.logger.warn(
+          { err: error, guildId: player.guildId, source },
+          "Source de secours indisponible"
+        );
       }
-    });
+    }
 
-    this.lavalink.manager.on("playerDestroy", (player) => {
-      this.clearPendingDestroy(player.guildId);
-    });
+    return false;
+  }
 
-    this.lavalink.manager.on("queueEnd", async (player, lastTrack) => {
-      const settings = await this.guildSettings.get(player.guildId);
+  private async tryAutoplayFromLastTrack(player: Player, lastTrack: QueueTrack): Promise<boolean> {
+    const seed = `${lastTrack.info.title ?? ""} ${lastTrack.info.author ?? ""}`.trim();
+    if (seed.length === 0) {
+      return false;
+    }
 
-      if (settings.autoplay && lastTrack) {
-        const seed = `${lastTrack.info.title ?? ""} ${lastTrack.info.author ?? ""}`.trim();
-        if (seed.length > 0) {
-          const search = await player.search(
-            {
-              query: seed,
-              source: "ytmsearch"
-            },
-            { id: "autoplay", username: "Autoplay" }
-          );
+    const autoplaySources: FallbackSource[] = ["ytmsearch", "ytsearch", "scsearch"];
+    for (const source of autoplaySources) {
+      try {
+        const search = await player.search(
+          {
+            query: seed,
+            source
+          },
+          { id: "autoplay", username: "Autoplay" }
+        );
 
-          const next =
-            search.tracks.find((track) => track.info.identifier !== lastTrack.info.identifier) ??
-            search.tracks[0];
-
-          if (next) {
-            await player.queue.add(next as Track);
-            await player.play();
-            this.logger.info({ guildId: player.guildId }, "Autoplay a ajoute une piste");
-            return;
-          }
+        const next =
+          search.tracks.find((track) => track.info.identifier !== lastTrack.info.identifier) ??
+          search.tracks[0];
+        if (!next) {
+          continue;
         }
-      }
 
-      if (settings.stayInVoice) {
-        this.logger.info({ guildId: player.guildId }, "Fin de file, connexion vocale conservee");
+        await player.queue.add(next as Track);
+        await player.play();
+        this.logger.info({ guildId: player.guildId, source }, "Lecture auto a ajoute une piste");
+        return true;
+      } catch (error) {
+        this.logger.warn(
+          { err: error, guildId: player.guildId, source },
+          "Lecture auto: echec recherche source"
+        );
+      }
+    }
+
+    return false;
+  }
+
+  private scheduleForceAdvanceAfterTrackError(guildId: string, failedTrack: QueueTrack): void {
+    const failedIdentifier = failedTrack.info.identifier ?? null;
+    const failedTitle = failedTrack.info.title ?? null;
+    const failedAuthor = failedTrack.info.author ?? null;
+
+    setTimeout(() => {
+      void this.forceAdvanceAfterTrackError(guildId, failedIdentifier, failedTitle, failedAuthor);
+    }, TRACK_ERROR_FORCE_ADVANCE_DELAY_MS);
+  }
+
+  private async forceAdvanceAfterTrackError(
+    guildId: string,
+    failedIdentifier: string | null,
+    failedTitle: string | null,
+    failedAuthor: string | null
+  ): Promise<void> {
+    try {
+      const player = this.lavalink.manager.getPlayer(guildId);
+      if (!player || player.paused || player.playing) {
         return;
       }
 
-      this.scheduleDestroy(player);
-    });
+      const current = player.queue.current;
+      if (!current || player.queue.tracks.length === 0) {
+        return;
+      }
+
+      if (!this.isSameTrack(current, failedIdentifier, failedTitle, failedAuthor)) {
+        return;
+      }
+
+      await player.skip();
+      this.logger.warn(
+        { guildId, failedTrack: current.info.title },
+        "Piste en erreur passee pour reprendre la file"
+      );
+    } catch (error) {
+      this.logger.warn({ err: error, guildId }, "Impossible de passer la piste apres erreur");
+    }
+  }
+
+  private isSameTrack(
+    current: QueueTrack,
+    identifier: string | null,
+    title: string | null,
+    author: string | null
+  ): boolean {
+    if (identifier && current.info.identifier) {
+      return current.info.identifier === identifier;
+    }
+
+    return current.info.title === title && current.info.author === author;
+  }
+
+  private markRecentTrackError(guildId: string): void {
+    this.recentTrackErrors.set(guildId, Date.now());
+  }
+
+  private hasRecentTrackError(guildId: string): boolean {
+    const lastErrorAt = this.recentTrackErrors.get(guildId);
+    if (!lastErrorAt) {
+      return false;
+    }
+
+    return Date.now() - lastErrorAt <= TRACK_ERROR_GRACE_PERIOD_MS;
   }
 
   private async getOrCreatePlayer(
@@ -773,8 +929,7 @@ export class MusicService {
     this.clearPendingDestroy(player.guildId);
 
     const timer = setTimeout(() => {
-      void player.destroy("Fin de file et inactivite");
-      this.pendingDestroyTimers.delete(player.guildId);
+      void this.destroyPlayerIfStillIdle(player.guildId);
     }, this.emptyDestroyTimeoutMs);
 
     this.pendingDestroyTimers.set(player.guildId, timer);
@@ -782,6 +937,29 @@ export class MusicService {
       { guildId: player.guildId, timeoutMs: this.emptyDestroyTimeoutMs },
       "Suppression du player planifiee apres fin de file"
     );
+  }
+
+  private async destroyPlayerIfStillIdle(guildId: string): Promise<void> {
+    this.pendingDestroyTimers.delete(guildId);
+
+    const player = this.lavalink.manager.getPlayer(guildId);
+    if (!player) {
+      return;
+    }
+
+    if (player.queue.current || player.queue.tracks.length > 0 || player.playing || player.paused) {
+      this.logger.info(
+        { guildId },
+        "Destruction annulee: le player n'est plus inactif au declenchement du timer"
+      );
+      return;
+    }
+
+    try {
+      await player.destroy("Fin de file et inactivite");
+    } catch (error) {
+      this.logger.warn({ err: error, guildId }, "Echec destruction player inactif");
+    }
   }
 
   private clearPendingDestroy(guildId: string): void {
@@ -804,7 +982,10 @@ export class MusicService {
       normalizedMessage.includes("all clients failed") ||
       normalizedMessage.includes("must find sig function") ||
       normalizedMessage.includes("requires login") ||
-      normalizedMessage.includes("status code: 403")
+      normalizedMessage.includes("status code: 403") ||
+      normalizedMessage.includes("decoding the track") ||
+      normalizedMessage.includes("expected decoding to halt") ||
+      normalizedMessage.includes("video player configuration error")
     );
   }
 

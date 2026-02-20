@@ -19,7 +19,7 @@ const envSchema = z.object({
   PLAYER_EMPTY_TIMEOUT_MS: z.coerce.number().int().min(30_000).default(300_000),
   PLAYER_SELF_DEAF: z
     .enum(["true", "false"])
-    .default("false")
+    .default("true")
     .transform((value) => value === "true"),
   MUSIC_PANEL_EMOJI: z.string().default("\u{1F4BF}"),
   AUTOPLAY_DEFAULT: z
@@ -34,7 +34,10 @@ const envSchema = z.object({
   MAX_CUSTOM_PLAYLISTS: z.coerce.number().int().min(1).default(50),
   MAX_TRACKS_PER_PLAYLIST: z.coerce.number().int().min(1).default(500),
   PLAYLIST_STORE_PATH: z.string().default("data/custom-playlists.json"),
-  GUILD_SETTINGS_STORE_PATH: z.string().default("data/guild-settings.json")
+  GUILD_SETTINGS_STORE_PATH: z.string().default("data/guild-settings.json"),
+  YOUTUBE_FALLBACK_SOURCE: z
+    .enum(["scsearch", "ytsearch", "ytmsearch"])
+    .default("scsearch")
 });
 
 export interface AppConfig {
@@ -57,6 +60,7 @@ export interface AppConfig {
   maxTracksPerPlaylist: number;
   playlistStorePath: string;
   guildSettingsStorePath: string;
+  youtubeFallbackSource: "scsearch" | "ytsearch" | "ytmsearch";
 }
 
 export function loadConfig(): AppConfig {
@@ -85,7 +89,8 @@ export function loadConfig(): AppConfig {
     maxCustomPlaylists: parsed.MAX_CUSTOM_PLAYLISTS,
     maxTracksPerPlaylist: parsed.MAX_TRACKS_PER_PLAYLIST,
     playlistStorePath: parsed.PLAYLIST_STORE_PATH,
-    guildSettingsStorePath: parsed.GUILD_SETTINGS_STORE_PATH
+    guildSettingsStorePath: parsed.GUILD_SETTINGS_STORE_PATH,
+    youtubeFallbackSource: parsed.YOUTUBE_FALLBACK_SOURCE
   };
 }
 

@@ -33,9 +33,10 @@ plugins:
       url: "http://yt-cipher:8001/"
     clients:
       - MUSIC
+      - ANDROID_VR
       - WEB
-      - MWEB
       - WEBEMBEDDED
+      - MWEB
   lavasrc:
     providers:
       - "ytsearch:\"%ISRC%\""
