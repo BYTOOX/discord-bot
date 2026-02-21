@@ -23,6 +23,9 @@ export const volumeCommand: SlashCommand = {
 
     const value = interaction.options.getInteger("value", true);
     const volume = await client.musicService.setVolume(interaction, value);
+    if (interaction.guildId) {
+      await client.refreshRegisteredMusicPanel(interaction.guildId, `Volume regle a ${volume}%.`);
+    }
     await sendReply(interaction, `Volume regle a ${volume}%.`);
   }
 };

@@ -14,6 +14,9 @@ export const stopCommand: SlashCommand = {
     }
 
     await client.musicService.stop(interaction);
+    if (interaction.guildId) {
+      await client.refreshRegisteredMusicPanel(interaction.guildId, "Lecture arretee et file videe.");
+    }
     await sendReply(interaction, "Lecture arretee et file videe.");
   }
 };

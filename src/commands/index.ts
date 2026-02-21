@@ -5,6 +5,7 @@ import { leaveCommand } from "./leave";
 import { mode247Command } from "./mode247";
 import { nowPlayingCommand } from "./nowplaying";
 import { pauseCommand } from "./pause";
+import { panelCommand } from "./panel";
 import { pingCommand } from "./ping";
 import { playCommand } from "./play";
 import { playlistCommand } from "./playlist";
@@ -22,6 +23,7 @@ export const commands: SlashCommand[] = [
   skipCommand,
   stopCommand,
   pauseCommand,
+  panelCommand,
   resumeCommand,
   leaveCommand,
   volumeCommand,
@@ -30,4 +32,3 @@ export const commands: SlashCommand[] = [
   filterCommand,
   playlistCommand
 ];
-

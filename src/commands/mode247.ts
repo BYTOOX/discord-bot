@@ -23,6 +23,10 @@ export const mode247Command: SlashCommand = {
       explicitValue === null ? undefined : explicitValue
     );
 
+    await client.refreshRegisteredMusicPanel(
+      guildId,
+      `Mode 24/7 ${result.enabled ? "active" : "desactive"}.`
+    );
     await sendReply(interaction, `Mode 24/7 ${result.enabled ? "active" : "desactive"}.`);
   }
 };

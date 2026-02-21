@@ -23,6 +23,10 @@ export const autoplayCommand: SlashCommand = {
       explicitValue === null ? undefined : explicitValue
     );
 
+    await client.refreshRegisteredMusicPanel(
+      guildId,
+      `Lecture auto ${result.enabled ? "activee" : "desactivee"}.`
+    );
     await sendReply(interaction, `Lecture auto ${result.enabled ? "activee" : "desactivee"}.`);
   }
 };

@@ -12,6 +12,9 @@ export const resumeCommand: SlashCommand = {
     }
 
     await client.musicService.resume(interaction);
+    if (interaction.guildId) {
+      await client.refreshRegisteredMusicPanel(interaction.guildId, "Lecture reprise.");
+    }
     await sendReply(interaction, "Lecture reprise.");
   }
 };

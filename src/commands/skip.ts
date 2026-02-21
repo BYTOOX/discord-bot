@@ -13,11 +13,18 @@ export const skipCommand: SlashCommand = {
     }
 
     const nextTrack = await client.musicService.skip(interaction);
+    const guildId = interaction.guildId;
     if (!nextTrack) {
+      if (guildId) {
+        await client.refreshRegisteredMusicPanel(guildId, "Piste passee. La file est maintenant vide.");
+      }
       await sendReply(interaction, "Piste passee. La file est maintenant vide.");
       return;
     }
 
+    if (guildId) {
+      await client.refreshRegisteredMusicPanel(guildId, `Piste passee. En cours: ${displayTrack(nextTrack)}.`);
+    }
     await sendReply(interaction, `Piste passee. En cours: ${displayTrack(nextTrack)}`);
   }
 };

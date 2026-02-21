@@ -12,6 +12,9 @@ export const pauseCommand: SlashCommand = {
     }
 
     await client.musicService.pause(interaction);
+    if (interaction.guildId) {
+      await client.refreshRegisteredMusicPanel(interaction.guildId, "Lecture en pause.");
+    }
     await sendReply(interaction, "Lecture en pause.");
   }
 };

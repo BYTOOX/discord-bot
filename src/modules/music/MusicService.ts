@@ -4,6 +4,7 @@ import {
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type GuildMember,
+  type StringSelectMenuInteraction,
   type Snowflake,
   type VoiceBasedChannel
 } from "discord.js";
@@ -14,11 +15,22 @@ import type { CustomPlaylistService } from "../playlists/CustomPlaylistService";
 import type { PlaylistTrackInput } from "../playlists/types";
 import type { ProviderResolver } from "../providers/ProviderResolver";
 import type { ProviderMode } from "../providers/types";
-import { PANEL_BUTTONS, type PanelAction, type PanelState } from "./MusicPanel";
+import {
+  PANEL_BUTTONS,
+  PANEL_SELECTS,
+  type PanelAction,
+  type PanelSelectAction,
+  type PanelState
+} from "./MusicPanel";
 import { LavalinkService } from "./LavalinkService";
 import type { GuildSettingsService } from "./GuildSettingsService";
 import { displayTrack, formatDuration, toPlaylistTrackInput } from "./trackHelpers";
-import type { EnqueueResult, QueueTrack } from "./types";
+import type {
+  EnqueueResult,
+  GuildPlaybackSettings,
+  MusicPanelDisplay,
+  QueueTrack
+} from "./types";
 
 const MAX_PLAYLIST_RESOLVE_PER_CALL = 150;
 const TRACK_ERROR_GRACE_PERIOD_MS = 90_000;
@@ -26,6 +38,9 @@ const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
 const FALLBACK_GUARD_TTL_MS = 15 * 60 * 1000;
 const YOUTUBE_SEARCH_DEGRADED_TTL_MS = 10 * 60 * 1000;
 const FALLBACK_QUERY_MAX_LENGTH = 140;
+const PANEL_JUMP_TARGET_LIMIT = 20;
+const SESSION_TRACK_HISTORY_LIMIT = 80;
+const VOTE_SKIP_RATIO = 0.6;
 const SEARCH_QUERY_NOISE_WORDS = new Set([
   "official",
   "video",
@@ -50,12 +65,38 @@ const SEARCH_QUERY_NOISE_WORDS = new Set([
 ]);
 type FallbackSource = "scsearch" | "ytsearch" | "ytmsearch";
 
+interface VoteSkipState {
+  trackKey: string;
+  requiredVotes: number;
+  voters: Set<string>;
+}
+
+interface SessionTrackRecord {
+  title: string;
+  author: string;
+  durationMs: number;
+  query: string;
+  url?: string;
+  requesterId?: string;
+  playedAt: number;
+}
+
+interface GuildSessionState {
+  startedAt: number;
+  tracksPlayed: number;
+  totalDurationMs: number;
+  requesterCounts: Map<string, number>;
+  recentTracks: SessionTrackRecord[];
+}
+
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
   private readonly fallbackGuard = new Set<string>();
   private readonly fallbackInProgressGuilds = new Set<string>();
   private readonly recentTrackErrors = new Map<string, number>();
   private readonly youtubeSearchDegradedUntil = new Map<string, number>();
+  private readonly voteSkipByGuild = new Map<string, VoteSkipState>();
+  private readonly sessionByGuild = new Map<string, GuildSessionState>();
 
   public constructor(
     private readonly lavalink: LavalinkService,
@@ -122,7 +163,15 @@ export class MusicService {
     }
 
     const tracksToAdd = result.playlist ? result.tracks : [result.tracks[0]];
-    await player.queue.add(tracksToAdd as Track[]);
+    const filteredTracks = this.filterDuplicateTracks(
+      player,
+      tracksToAdd as (Track | UnresolvedTrack)[]
+    );
+    if (filteredTracks.accepted.length === 0) {
+      throw new Error("Toutes les pistes detectees sont deja presentes dans la file.");
+    }
+
+    await player.queue.add(filteredTracks.accepted as Track[]);
 
     if (!player.playing && !player.paused) {
       await player.play();
@@ -131,7 +180,8 @@ export class MusicService {
     const firstTrack = result.tracks[0];
     const enqueueResult: EnqueueResult = {
       provider: resolution.provider,
-      addedCount: tracksToAdd.length,
+      addedCount: filteredTracks.accepted.length,
+      duplicateSkippedCount: filteredTracks.duplicateSkippedCount,
       isPlaylist: Boolean(result.playlist),
       firstTrackTitle: firstTrack?.info.title ?? "Titre inconnu",
       firstTrackAuthor: firstTrack?.info.author ?? "Auteur inconnu",
@@ -157,7 +207,7 @@ export class MusicService {
     interaction: ChatInputCommandInteraction,
     playlistName: string,
     shuffle: boolean
-  ): Promise<{ addedCount: number; requestedCount: number }> {
+  ): Promise<{ addedCount: number; requestedCount: number; duplicateSkippedCount: number }> {
     if (!interaction.guildId) {
       throw new Error("Cette commande ne fonctionne que sur un serveur.");
     }
@@ -178,8 +228,10 @@ export class MusicService {
     const tracks = [...playlist.tracks];
     const selectedTracks = shuffle ? shuffleArray(tracks) : tracks;
     const cappedTracks = selectedTracks.slice(0, MAX_PLAYLIST_RESOLVE_PER_CALL);
+    const knownTrackKeys = this.collectTrackKeysForPlayer(player);
 
     let addedCount = 0;
+    let duplicateSkippedCount = 0;
     for (const track of cappedTracks) {
       const result = await player.search(this.providers.resolve(track.query).searchQuery, {
         id: interaction.user.id,
@@ -190,7 +242,15 @@ export class MusicService {
         continue;
       }
 
-      await player.queue.add(result.tracks[0] as Track);
+      const resolvedTrack = result.tracks[0] as Track | UnresolvedTrack;
+      const trackKey = this.getTrackKey(resolvedTrack);
+      if (knownTrackKeys.has(trackKey)) {
+        duplicateSkippedCount += 1;
+        continue;
+      }
+
+      knownTrackKeys.add(trackKey);
+      await player.queue.add(resolvedTrack as Track);
       addedCount += 1;
     }
 
@@ -204,7 +264,8 @@ export class MusicService {
 
     return {
       addedCount,
-      requestedCount: cappedTracks.length
+      requestedCount: cappedTracks.length,
+      duplicateSkippedCount
     };
   }
 
@@ -377,6 +438,49 @@ export class MusicService {
     };
   }
 
+  public async saveSessionHistoryToPlaylist(
+    interaction: ChatInputCommandInteraction,
+    playlistName: string,
+    maxTracks = 30
+  ): Promise<{ addedCount: number; attemptedCount: number; availableCount: number }> {
+    if (!interaction.guildId) {
+      throw new Error("Cette commande ne fonctionne que sur un serveur.");
+    }
+
+    const session = this.sessionByGuild.get(interaction.guildId);
+    if (!session || session.recentTracks.length === 0) {
+      throw new Error("Aucune session recente a sauvegarder.");
+    }
+
+    const clamped = Math.max(1, Math.min(100, maxTracks));
+    const selected = session.recentTracks.slice(-clamped);
+    const playlistTracks: PlaylistTrackInput[] = selected.map((track) => {
+      const payload: PlaylistTrackInput = {
+        query: track.query,
+        title: `${track.title} - ${track.author}`.trim(),
+        addedBy: interaction.user.id
+      };
+
+      if (track.url) {
+        payload.url = track.url;
+      }
+
+      return payload;
+    });
+
+    const result = await this.playlistService.addTracks(
+      interaction.guildId,
+      playlistName,
+      playlistTracks
+    );
+
+    return {
+      addedCount: result.addedCount,
+      attemptedCount: playlistTracks.length,
+      availableCount: session.recentTracks.length
+    };
+  }
+
   public getQueueSummary(
     guildId: Snowflake,
     previewCount = 10
@@ -428,6 +532,59 @@ export class MusicService {
       repeatMode: player.repeatMode,
       hasPrevious: player.queue.previous.length > 0
     };
+  }
+
+  public async getPanelDisplay(guildId: string): Promise<MusicPanelDisplay | null> {
+    const player = this.lavalink.manager.getPlayer(guildId);
+    if (!player) {
+      return null;
+    }
+
+    const focusTrack = player.queue.current ?? player.queue.tracks[0];
+    if (!focusTrack) {
+      return null;
+    }
+
+    const settings = await this.guildSettings.get(guildId);
+    const isCurrentTrack = player.queue.current === focusTrack;
+    const sourceName = focusTrack.info.sourceName ?? "unknown";
+    const display: MusicPanelDisplay = {
+      trackTitle: focusTrack.info.title ?? "Titre inconnu",
+      trackAuthor: focusTrack.info.author ?? "Auteur inconnu",
+      trackDurationMs: focusTrack.info.duration ?? 0,
+      trackPositionMs: isCurrentTrack ? Math.max(0, player.position) : 0,
+      isPlaying: isCurrentTrack ? player.playing : false,
+      isPaused: isCurrentTrack ? player.paused : false,
+      accentColor: this.resolvePanelAccentColor(
+        sourceName,
+        isCurrentTrack ? player.playing : false,
+        isCurrentTrack ? player.paused : false
+      ),
+      sourceName,
+      modeInfo: this.buildPanelModeInfo(player, settings),
+      playlistInfo: this.buildPanelPlaylistInfo(player),
+      queueHealthInfo: this.buildPanelQueueHealthInfo(guildId, player),
+      sessionInfo: this.buildPanelSessionInfo(guildId),
+      voteSkipInfo: this.buildPanelVoteSkipInfo(player),
+      jumpTargets: this.buildJumpTargets(player)
+    };
+
+    const trackUrl = this.resolveTrackUrl(focusTrack);
+    if (trackUrl) {
+      display.trackUrl = trackUrl;
+    }
+
+    const artworkUrl = this.resolveTrackArtworkUrl(focusTrack);
+    if (artworkUrl) {
+      display.trackArtworkUrl = artworkUrl;
+    }
+
+    const requestedById = this.extractRequesterId(focusTrack);
+    if (requestedById) {
+      display.requestedById = requestedById;
+    }
+
+    return display;
   }
 
   public async handlePanelAction(
@@ -523,6 +680,14 @@ export class MusicService {
         };
       }
 
+      case PANEL_BUTTONS.voteSkip: {
+        const result = await this.applyVoteSkip(player, context.member);
+        return {
+          message: result.message,
+          state: await this.getPanelState(guildId)
+        };
+      }
+
       case PANEL_BUTTONS.playlist: {
         const queue = this.getQueueSummary(guildId, 6);
         if (!queue.current && queue.upcoming.length === 0) {
@@ -561,10 +726,61 @@ export class MusicService {
     }
   }
 
+  public async handlePanelSelectAction(
+    interaction: StringSelectMenuInteraction
+  ): Promise<{ message: string; state?: PanelState }> {
+    const action = interaction.customId as PanelSelectAction;
+    const context = await this.getRequiredPanelContext(interaction);
+    const { player, guildId } = context;
+
+    switch (action) {
+      case PANEL_SELECTS.jump: {
+        const selected = interaction.values[0];
+        if (!selected) {
+          throw new Error("Aucune piste selectionnee.");
+        }
+
+        const jumpIndex = Number.parseInt(selected, 10);
+        if (!Number.isInteger(jumpIndex)) {
+          throw new Error("Cible de saut invalide.");
+        }
+
+        if (jumpIndex < 0 || jumpIndex >= player.queue.tracks.length) {
+          throw new Error("La piste selectionnee n'est plus disponible.");
+        }
+
+        const target = player.queue.tracks[jumpIndex];
+        if (!target) {
+          throw new Error("La piste selectionnee est introuvable.");
+        }
+
+        await player.queue.splice(jumpIndex, 1);
+        await player.queue.add(target as Track | UnresolvedTrack, 0);
+
+        if (player.queue.current) {
+          await player.skip();
+        } else if (!player.playing && !player.paused) {
+          await player.play();
+        }
+
+        this.voteSkipByGuild.delete(guildId);
+        return {
+          message: `Jump sur: ${displayTrack(target)}.`,
+          state: await this.getPanelState(guildId)
+        };
+      }
+
+      default:
+        throw new Error("Action select du panneau inconnue.");
+    }
+  }
+
   private bindAutoplayHandler(): void {
-    this.lavalink.manager.on("trackStart", (player) => {
+    this.lavalink.manager.on("trackStart", (player, track) => {
       this.clearPendingDestroy(player.guildId);
       this.recentTrackErrors.delete(player.guildId);
+      this.voteSkipByGuild.delete(player.guildId);
+      this.recordSessionTrack(player.guildId, track as QueueTrack | undefined);
     });
 
     this.lavalink.manager.on("trackError", (player, track, payload) => {
@@ -575,9 +791,11 @@ export class MusicService {
     this.lavalink.manager.on("playerDestroy", (player) => {
       this.clearPendingDestroy(player.guildId);
       this.recentTrackErrors.delete(player.guildId);
+      this.voteSkipByGuild.delete(player.guildId);
     });
 
     this.lavalink.manager.on("queueEnd", (player, lastTrack) => {
+      this.voteSkipByGuild.delete(player.guildId);
       void this.handleQueueEnd(player, lastTrack as QueueTrack | undefined);
     });
   }
@@ -1111,6 +1329,532 @@ export class MusicService {
     return sourceName?.toLowerCase().includes("youtube") ?? false;
   }
 
+  private buildPanelModeInfo(player: Player, settings: GuildPlaybackSettings): string {
+    const repeatLabel =
+      player.repeatMode === "off"
+        ? "Arret"
+        : player.repeatMode === "track"
+          ? "Piste"
+          : "File";
+    const playbackLabel = player.paused ? "Pause" : player.playing ? "Lecture" : "Pret";
+
+    return [
+      `Etat: ${playbackLabel}`,
+      `Boucle: ${repeatLabel}`,
+      `Autoplay: ${settings.autoplay ? "ON" : "OFF"}`,
+      `Mode 24/7: ${settings.stayInVoice ? "ON" : "OFF"}`,
+      `Volume: ${player.volume}%`
+    ].join("\n");
+  }
+
+  private buildPanelPlaylistInfo(player: Player, previewCount = 5): string {
+    const lines: string[] = [];
+
+    if (player.queue.current) {
+      lines.push(`Now: ${this.formatPanelTrackLine(player.queue.current)}`);
+    }
+
+    const preview = player.queue.tracks
+      .slice(0, previewCount)
+      .map((track, index) => `${index + 1}. ${this.formatPanelTrackLine(track)}`);
+    if (preview.length > 0) {
+      lines.push("A suivre:");
+      lines.push(...preview);
+    }
+
+    const remaining = player.queue.tracks.length - preview.length;
+    if (remaining > 0) {
+      lines.push(`... +${remaining} piste(s)`);
+    }
+
+    if (lines.length === 0) {
+      return "File vide pour le moment.";
+    }
+
+    return this.truncateForEmbedField(lines.join("\n"), 1024);
+  }
+
+  private buildPanelQueueHealthInfo(guildId: string, player: Player): string {
+    const queueSize = player.queue.tracks.length;
+    const { knownDurationMs, hasUnknownDuration } = this.collectRemainingDuration(player);
+    const recentError = this.hasRecentTrackError(guildId);
+    const degradedYoutube = this.isYoutubeSearchDegradedActive(guildId);
+
+    const healthLabel = recentError ? "Fragile" : degradedYoutube ? "Surveillance" : "Stable";
+    const remaining =
+      knownDurationMs > 0
+        ? formatDuration(knownDurationMs)
+        : hasUnknownDuration
+          ? "stream"
+          : "0:00";
+    const remainingLabel = hasUnknownDuration && knownDurationMs > 0 ? `${remaining} + stream` : remaining;
+
+    return [
+      `Etat: ${healthLabel}`,
+      `Pistes en attente: ${queueSize}`,
+      `Temps restant: ${remainingLabel}`,
+      `Erreurs recentes: ${recentError ? "oui" : "non"}`,
+      `Recherche YouTube degradee: ${degradedYoutube ? "oui" : "non"}`
+    ].join("\n");
+  }
+
+  private buildPanelSessionInfo(guildId: string): string {
+    const session = this.sessionByGuild.get(guildId);
+    if (!session) {
+      return "Session en attente.\nLance une piste pour demarrer le suivi.";
+    }
+
+    const elapsedMs = Math.max(0, Date.now() - session.startedAt);
+    const topRequester = this.getTopSessionRequester(session);
+    const lastTrack = session.recentTracks.at(-1);
+
+    const lines = [
+      `Ouverte: ${formatDuration(elapsedMs)}`,
+      `Pistes jouees: ${session.tracksPlayed}`,
+      `Temps ecoute: ${formatDuration(Math.max(1, session.totalDurationMs))}`
+    ];
+
+    if (topRequester) {
+      lines.push(`Top demandeur: <@${topRequester.id}> (${topRequester.count})`);
+    } else {
+      lines.push("Top demandeur: n/a");
+    }
+
+    if (lastTrack) {
+      lines.push(`Derniere: ${this.truncateForEmbedField(`${lastTrack.title} - ${lastTrack.author}`, 110)}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  private buildPanelVoteSkipInfo(player: Player): string {
+    const current = player.queue.current;
+    if (!current) {
+      return "Aucune piste active.";
+    }
+
+    const voteState = this.getVoteStateForPlayer(player);
+    const votes = voteState?.voters.size ?? 0;
+    const requiredVotes = voteState?.requiredVotes ?? 1;
+
+    const voterList =
+      voteState && voteState.voters.size > 0
+        ? [...voteState.voters].slice(0, 6).map((id) => `<@${id}>`).join(", ")
+        : "Aucun vote pour le moment.";
+
+    return [
+      `Progression: ${votes}/${requiredVotes}`,
+      `Seuil: ${requiredVotes} vote(s)`,
+      `Votants: ${voterList}`
+    ].join("\n");
+  }
+
+  private buildJumpTargets(player: Player): MusicPanelDisplay["jumpTargets"] {
+    return player.queue.tracks
+      .slice(0, PANEL_JUMP_TARGET_LIMIT)
+      .map((track, index) => ({
+        value: `${index}`,
+        label: `#${index + 1} ${this.truncateForEmbedField(track.info.title ?? "Titre inconnu", 80)}`,
+        description: this.truncateForEmbedField(
+          `${track.info.author ?? "Auteur inconnu"} • ${formatDuration(track.info.duration ?? 0)}`,
+          90
+        )
+      }));
+  }
+
+  private collectRemainingDuration(player: Player): {
+    knownDurationMs: number;
+    hasUnknownDuration: boolean;
+  } {
+    const tracks: QueueTrack[] = [];
+    if (player.queue.current) {
+      tracks.push(player.queue.current);
+    }
+    tracks.push(...player.queue.tracks);
+
+    let knownDurationMs = 0;
+    let hasUnknownDuration = false;
+    for (const track of tracks) {
+      const duration = track.info.duration ?? 0;
+      if (Number.isFinite(duration) && duration > 0) {
+        knownDurationMs += duration;
+      } else {
+        hasUnknownDuration = true;
+      }
+    }
+
+    return { knownDurationMs, hasUnknownDuration };
+  }
+
+  private getTopSessionRequester(
+    session: GuildSessionState
+  ): { id: string; count: number } | null {
+    let top: { id: string; count: number } | null = null;
+    for (const [id, count] of session.requesterCounts.entries()) {
+      if (!top || count > top.count) {
+        top = { id, count };
+      }
+    }
+
+    return top;
+  }
+
+  private async applyVoteSkip(
+    player: Player,
+    member: GuildMember
+  ): Promise<{ message: string }> {
+    const current = player.queue.current;
+    if (!current) {
+      throw new Error("Aucune piste en cours pour voter un skip.");
+    }
+
+    const eligibleVoters = this.getEligibleVoteCount(member);
+    const requiredVotes = this.computeRequiredVoteCount(eligibleVoters);
+    const voteState = this.getOrCreateVoteSkipState(player, requiredVotes);
+
+    if (voteState.voters.has(member.id)) {
+      return {
+        message: `Vote deja enregistre (${voteState.voters.size}/${voteState.requiredVotes}).`
+      };
+    }
+
+    voteState.requiredVotes = requiredVotes;
+    voteState.voters.add(member.id);
+
+    if (voteState.voters.size < voteState.requiredVotes) {
+      return {
+        message: `Vote skip ajoute: ${voteState.voters.size}/${voteState.requiredVotes}.`
+      };
+    }
+
+    this.voteSkipByGuild.delete(player.guildId);
+    await player.skip();
+
+    const nowPlaying = player.queue.current;
+    if (!nowPlaying) {
+      return { message: "Vote valide. Piste passee, file vide." };
+    }
+
+    return {
+      message: `Vote valide (${requiredVotes}/${requiredVotes}). Nouvelle piste: ${displayTrack(nowPlaying)}.`
+    };
+  }
+
+  private getEligibleVoteCount(member: GuildMember): number {
+    const voiceMembers = member.voice.channel?.members;
+    if (!voiceMembers) {
+      return 1;
+    }
+
+    let count = 0;
+    for (const voiceMember of voiceMembers.values()) {
+      if (voiceMember.user.bot) {
+        continue;
+      }
+
+      count += 1;
+    }
+
+    return Math.max(1, count);
+  }
+
+  private computeRequiredVoteCount(eligibleVoters: number): number {
+    if (eligibleVoters <= 1) {
+      return 1;
+    }
+
+    return Math.max(2, Math.ceil(eligibleVoters * VOTE_SKIP_RATIO));
+  }
+
+  private getOrCreateVoteSkipState(player: Player, requiredVotes: number): VoteSkipState {
+    const current = player.queue.current;
+    if (!current) {
+      throw new Error("Aucune piste active.");
+    }
+
+    const trackKey = this.getTrackKey(current);
+    const existing = this.voteSkipByGuild.get(player.guildId);
+    if (existing && existing.trackKey === trackKey) {
+      return existing;
+    }
+
+    const created: VoteSkipState = {
+      trackKey,
+      requiredVotes: Math.max(1, requiredVotes),
+      voters: new Set<string>()
+    };
+    this.voteSkipByGuild.set(player.guildId, created);
+    return created;
+  }
+
+  private getVoteStateForPlayer(player: Player): VoteSkipState | null {
+    const current = player.queue.current;
+    if (!current) {
+      return null;
+    }
+
+    const existing = this.voteSkipByGuild.get(player.guildId);
+    if (!existing) {
+      return null;
+    }
+
+    const currentTrackKey = this.getTrackKey(current);
+    if (existing.trackKey !== currentTrackKey) {
+      this.voteSkipByGuild.delete(player.guildId);
+      return null;
+    }
+
+    return existing;
+  }
+
+  private recordSessionTrack(guildId: string, track: QueueTrack | undefined): void {
+    if (!track) {
+      return;
+    }
+
+    const session = this.getOrCreateSessionState(guildId);
+    const durationMs =
+      Number.isFinite(track.info.duration) && (track.info.duration ?? 0) > 0
+        ? track.info.duration ?? 0
+        : 0;
+
+    session.tracksPlayed += 1;
+    session.totalDurationMs += durationMs;
+
+    const requesterId = this.extractRequesterId(track);
+    if (requesterId) {
+      session.requesterCounts.set(requesterId, (session.requesterCounts.get(requesterId) ?? 0) + 1);
+    }
+
+    const record: SessionTrackRecord = {
+      title: track.info.title ?? "Titre inconnu",
+      author: track.info.author ?? "Auteur inconnu",
+      durationMs,
+      query:
+        track.info.uri?.trim() ||
+        `${track.info.title ?? ""} ${track.info.author ?? ""}`.trim() ||
+        track.info.identifier ||
+        "inconnu",
+      playedAt: Date.now()
+    };
+
+    if (track.info.uri) {
+      record.url = track.info.uri;
+    }
+    if (requesterId) {
+      record.requesterId = requesterId;
+    }
+
+    session.recentTracks.push(record);
+    if (session.recentTracks.length > SESSION_TRACK_HISTORY_LIMIT) {
+      session.recentTracks.splice(0, session.recentTracks.length - SESSION_TRACK_HISTORY_LIMIT);
+    }
+  }
+
+  private getOrCreateSessionState(guildId: string): GuildSessionState {
+    const existing = this.sessionByGuild.get(guildId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: GuildSessionState = {
+      startedAt: Date.now(),
+      tracksPlayed: 0,
+      totalDurationMs: 0,
+      requesterCounts: new Map<string, number>(),
+      recentTracks: []
+    };
+    this.sessionByGuild.set(guildId, created);
+    return created;
+  }
+
+  private collectTrackKeysForPlayer(player: Player): Set<string> {
+    const keys = new Set<string>();
+    if (player.queue.current) {
+      keys.add(this.getTrackKey(player.queue.current));
+    }
+
+    for (const queuedTrack of player.queue.tracks) {
+      keys.add(this.getTrackKey(queuedTrack));
+    }
+
+    return keys;
+  }
+
+  private filterDuplicateTracks(
+    player: Player,
+    tracks: (Track | UnresolvedTrack)[]
+  ): { accepted: (Track | UnresolvedTrack)[]; duplicateSkippedCount: number } {
+    const knownTrackKeys = this.collectTrackKeysForPlayer(player);
+    const accepted: (Track | UnresolvedTrack)[] = [];
+    let duplicateSkippedCount = 0;
+
+    for (const track of tracks) {
+      const trackKey = this.getTrackKey(track);
+      if (knownTrackKeys.has(trackKey)) {
+        duplicateSkippedCount += 1;
+        continue;
+      }
+
+      knownTrackKeys.add(trackKey);
+      accepted.push(track);
+    }
+
+    return { accepted, duplicateSkippedCount };
+  }
+
+  private getTrackKey(track: Track | UnresolvedTrack): string {
+    const identifier = track.info.identifier?.trim();
+    if (identifier) {
+      return `id:${identifier.toLowerCase()}`;
+    }
+
+    const title = (track.info.title ?? "").trim().toLowerCase();
+    const author = (track.info.author ?? "").trim().toLowerCase();
+    const duration = track.info.duration ?? 0;
+    return `meta:${title}::${author}::${duration}`;
+  }
+
+  private resolvePanelAccentColor(sourceName: string, isPlaying: boolean, isPaused: boolean): number {
+    const source = sourceName.toLowerCase();
+    const palette: Record<string, number> = {
+      youtube: 0xff2d55,
+      youtubemusic: 0xff4f7a,
+      "youtube music": 0xff4f7a,
+      soundcloud: 0xff7a18,
+      spotify: 0x1ed760,
+      deezer: 0x00b8ff,
+      apple_music: 0xfa2d48,
+      applemusic: 0xfa2d48
+    };
+
+    const base = palette[source] ?? 0x2b90ff;
+    if (isPaused) {
+      return this.scaleColor(base, 0.72);
+    }
+
+    if (!isPlaying) {
+      return this.scaleColor(base, 0.82);
+    }
+
+    return base;
+  }
+
+  private scaleColor(color: number, factor: number): number {
+    const safeFactor = Math.max(0, Math.min(1.5, factor));
+    const red = Math.min(255, Math.round(((color >> 16) & 0xff) * safeFactor));
+    const green = Math.min(255, Math.round(((color >> 8) & 0xff) * safeFactor));
+    const blue = Math.min(255, Math.round((color & 0xff) * safeFactor));
+    return (red << 16) | (green << 8) | blue;
+  }
+
+  private formatPanelTrackLine(track: QueueTrack): string {
+    const text = `${displayTrack(track)} (${formatDuration(track.info.duration ?? 0)})`;
+    return this.truncateForEmbedField(text, 130);
+  }
+
+  private truncateForEmbedField(value: string, maxLength: number): string {
+    if (value.length <= maxLength) {
+      return value;
+    }
+
+    if (maxLength <= 3) {
+      return value.slice(0, maxLength);
+    }
+
+    return `${value.slice(0, maxLength - 3)}...`;
+  }
+
+  private resolveTrackUrl(track: QueueTrack): string | null {
+    const uri = track.info.uri?.trim();
+    if (uri) {
+      return uri;
+    }
+
+    const identifier = track.info.identifier?.trim();
+    if (!identifier) {
+      return null;
+    }
+
+    if (this.isYoutubeSource(track.info.sourceName)) {
+      return `https://www.youtube.com/watch?v=${identifier}`;
+    }
+
+    return null;
+  }
+
+  private resolveTrackArtworkUrl(track: QueueTrack): string | null {
+    const artworkUrl = track.info.artworkUrl?.trim();
+    if (artworkUrl) {
+      return artworkUrl;
+    }
+
+    const youtubeId = this.extractYoutubeVideoId(track.info.identifier, track.info.uri);
+    if (youtubeId) {
+      return `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
+    }
+
+    return null;
+  }
+
+  private extractRequesterId(track: QueueTrack): string | null {
+    const requester = (track as { requester?: unknown }).requester;
+    if (!requester || typeof requester !== "object") {
+      return null;
+    }
+
+    const candidate = (requester as { id?: unknown }).id;
+    if (typeof candidate !== "string" || candidate.length === 0) {
+      return null;
+    }
+
+    return candidate;
+  }
+
+  private extractYoutubeVideoId(identifier?: string, uri?: string): string | null {
+    if (identifier && this.isLikelyYoutubeId(identifier)) {
+      return identifier;
+    }
+
+    if (!uri) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(uri);
+      const host = parsed.hostname.toLowerCase();
+      if (host === "youtu.be") {
+        const pathId = parsed.pathname.replace(/^\/+/, "").split("/")[0];
+        if (pathId && this.isLikelyYoutubeId(pathId)) {
+          return pathId;
+        }
+      }
+
+      if (host.endsWith("youtube.com")) {
+        const queryId = parsed.searchParams.get("v");
+        if (queryId && this.isLikelyYoutubeId(queryId)) {
+          return queryId;
+        }
+
+        const pathMatch = parsed.pathname.match(/\/(?:shorts|embed)\/([A-Za-z0-9_-]{11})/);
+        if (pathMatch?.[1]) {
+          return pathMatch[1];
+        }
+      }
+    } catch {
+      const fallbackMatch = uri.match(/([A-Za-z0-9_-]{11})/);
+      if (fallbackMatch?.[1] && this.isLikelyYoutubeId(fallbackMatch[1])) {
+        return fallbackMatch[1];
+      }
+    }
+
+    return null;
+  }
+
+  private isLikelyYoutubeId(value: string): boolean {
+    return /^[A-Za-z0-9_-]{11}$/.test(value);
+  }
+
   private async getOrCreatePlayer(
     interaction: ChatInputCommandInteraction,
     voiceChannel: VoiceBasedChannel,
@@ -1184,7 +1928,9 @@ export class MusicService {
     return player;
   }
 
-  private async getRequiredPanelContext(interaction: ButtonInteraction): Promise<{
+  private async getRequiredPanelContext(
+    interaction: ButtonInteraction | StringSelectMenuInteraction
+  ): Promise<{
     guildId: string;
     player: Player;
     member: GuildMember;

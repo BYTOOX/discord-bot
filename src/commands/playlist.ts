@@ -57,6 +57,21 @@ export const playlistCommand: SlashCommand = {
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName("savesession")
+        .setDescription("Sauvegarde l'historique de session recente dans une playlist.")
+        .addStringOption((option) =>
+          option.setName("name").setDescription("Nom de la playlist").setRequired(true)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("limit")
+            .setDescription("Nombre max de pistes a sauvegarder (1-100)")
+            .setMinValue(1)
+            .setMaxValue(100)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName("remove")
         .setDescription("Supprime une piste de playlist par index.")
         .addStringOption((option) =>
@@ -175,6 +190,21 @@ export const playlistCommand: SlashCommand = {
         return;
       }
 
+      case "savesession": {
+        const name = interaction.options.getString("name", true);
+        const limit = interaction.options.getInteger("limit") ?? 30;
+        const result = await client.musicService.saveSessionHistoryToPlaylist(
+          interaction,
+          name,
+          limit
+        );
+        await sendReply(
+          interaction,
+          `Session sauvegardee dans "${name}". Ajoute: ${result.addedCount}/${result.attemptedCount} piste(s) (historique dispo: ${result.availableCount}).`
+        );
+        return;
+      }
+
       case "remove": {
         const name = interaction.options.getString("name", true);
         const index = interaction.options.getInteger("index", true);
@@ -191,10 +221,13 @@ export const playlistCommand: SlashCommand = {
         const shuffle = interaction.options.getBoolean("shuffle") ?? false;
         await interaction.deferReply();
         const result = await client.musicService.playCustomPlaylist(interaction, name, shuffle);
-        await sendReply(
-          interaction,
-          `Playlist "${name}" ajoutee a la file: ${result.addedCount}/${result.requestedCount} pistes.`
-        );
+        const duplicateInfo =
+          result.duplicateSkippedCount > 0
+            ? ` Doublons ignores: ${result.duplicateSkippedCount}.`
+            : "";
+        const message = `Playlist "${name}" ajoutee a la file: ${result.addedCount}/${result.requestedCount} pistes.${duplicateInfo}`;
+        await client.refreshRegisteredMusicPanel(guildId, message);
+        await sendReply(interaction, message);
         return;
       }
 
