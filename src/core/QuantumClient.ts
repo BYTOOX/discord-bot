@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   Client,
   Collection,
   Events,
@@ -24,8 +25,10 @@ import {
   buildMusicPanel,
   isMusicPanelAction,
   isMusicPanelSelectAction,
-  PANEL_BUTTONS
+  PANEL_BUTTONS,
+  type PanelState
 } from "../modules/music/MusicPanel";
+import { renderMusicPanelImage } from "../modules/music/MusicPanelImage";
 
 const PANEL_LIVE_REFRESH_MS = 7_000;
 
@@ -146,11 +149,19 @@ export class QuantumClient extends Client {
         status,
         !liveDisplay
       );
+      const panelImageAttachment = await this.buildPanelImageAttachment(
+        guildId,
+        panelDisplay,
+        panelState,
+        status
+      );
       await message.edit({
         content: null,
         components: panel.components,
         embeds: [],
-        flags: panel.flags
+        flags: panel.flags,
+        attachments: [],
+        files: panelImageAttachment ? [panelImageAttachment] : []
       });
       return true;
     } catch (error) {
@@ -472,6 +483,21 @@ export class QuantumClient extends Client {
       }
 
       await this.refreshRegisteredMusicPanel(guildId);
+    }
+  }
+
+  private async buildPanelImageAttachment(
+    guildId: string,
+    panelDisplay: MusicPanelDisplay,
+    panelState: PanelState,
+    status?: string
+  ): Promise<AttachmentBuilder | null> {
+    try {
+      const panelImage = await renderMusicPanelImage(panelDisplay, panelState, status);
+      return new AttachmentBuilder(panelImage, { name: "quantum-panel-v3.png" });
+    } catch (error) {
+      this.logger.warn({ err: error, guildId }, "Echec rendu image panel musique");
+      return null;
     }
   }
 }

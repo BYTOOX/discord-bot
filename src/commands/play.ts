@@ -66,6 +66,7 @@ export const playCommand: SlashCommand = {
     });
 
     client.registerMusicPanelMessage(interaction.guildId, sent.channelId, sent.id);
+    await client.refreshRegisteredMusicPanel(interaction.guildId, status);
     await sendReply(interaction, `Ajoute a la file: ${formatAddedCount(result)}.`);
   }
 };
