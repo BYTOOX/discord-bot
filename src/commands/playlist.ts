@@ -31,7 +31,7 @@ export const playlistCommand: SlashCommand = {
     .addSubcommand((subcommand) =>
       subcommand
         .setName("add")
-        .setDescription("Ajoute une requete/URL dans une playlist.")
+        .setDescription("Ajoute une requete YouTube ou un lien YouTube/Spotify dans une playlist.")
         .addStringOption((option) =>
           option.setName("name").setDescription("Nom de la playlist").setRequired(true)
         )
@@ -65,9 +65,9 @@ export const playlistCommand: SlashCommand = {
         .addIntegerOption((option) =>
           option
             .setName("limit")
-            .setDescription("Nombre max de pistes a sauvegarder (1-100)")
+            .setDescription("Nombre max de pistes a sauvegarder (1-101)")
             .setMinValue(1)
-            .setMaxValue(100)
+            .setMaxValue(101)
         )
     )
     .addSubcommand((subcommand) =>
@@ -158,14 +158,18 @@ export const playlistCommand: SlashCommand = {
       case "add": {
         const name = interaction.options.getString("name", true);
         const query = interaction.options.getString("query", true);
-        const playlist = await client.playlistService.addTrack(guildId, name, {
-          query,
-          title: query,
-          addedBy: interaction.user.id
-        });
+        const result = await client.musicService.addQueryToPlaylist(interaction, name, query);
+        const summary =
+          result.attemptedCount > 1
+            ? `Import detecte (${result.sourceLabel}): ${result.addedCount}/${result.attemptedCount} pistes ajoutees.`
+            : `1 piste ajoutee (${result.sourceLabel}).`;
+        const playlist = await client.playlistService.getPlaylist(guildId, name);
+        if (!playlist) {
+          throw new Error(`Playlist \"${name}\" introuvable apres ajout.`);
+        }
         await sendReply(
           interaction,
-          `Requete ajoutee a "${playlist.name}". Total: ${playlist.tracks.length} pistes.`
+          `${summary} Total dans \"${playlist.name}\": ${playlist.tracks.length} pistes.`
         );
         return;
       }

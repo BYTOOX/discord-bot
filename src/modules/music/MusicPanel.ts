@@ -1,14 +1,11 @@
-import {
+﻿import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
-  EmbedBuilder,
   MessageFlags,
   StringSelectMenuBuilder,
-  type APIEmbed,
   type ComponentInContainerData,
-  type Embed,
   type TopLevelComponentData
 } from "discord.js";
 
@@ -16,8 +13,7 @@ import { formatDuration } from "./trackHelpers";
 import type { MusicPanelDisplay } from "./types";
 
 export const PANEL_PREFIX = "music_panel";
-const PROGRESS_BAR_SIZE = 16;
-const SPINNER_FRAMES = ["|", "/", "-", "\\"];
+const PROGRESS_BAR_SIZE = 18;
 
 export const PANEL_BUTTONS = {
   volumeDown: `${PANEL_PREFIX}:volume_down`,
@@ -68,34 +64,20 @@ export function buildMusicPanel(
   disableControls = false
 ): MusicPanelRender {
   const provider = formatProvider(display.sourceName);
-  const playbackLabel = display.isPaused ? "PAUSE" : display.isPlaying ? "LIVE" : "IDLE";
-  const motionFrame = display.isPlaying
-    ? getSpinnerFrame(display.trackPositionMs)
-    : display.isPaused
-      ? "||"
-      : "--";
-  const progressBar = buildProgressBar(
-    display.trackPositionMs,
-    display.trackDurationMs,
-    PROGRESS_BAR_SIZE
-  );
-  const elapsed = formatDuration(display.trackPositionMs);
-  const duration = formatDuration(display.trackDurationMs);
+  const playback = display.isPaused ? "PAUSE" : display.isPlaying ? "LIVE" : "IDLE";
+  const progressBar = buildProgressBar(display.trackPositionMs, display.trackDurationMs, PROGRESS_BAR_SIZE);
 
   const title = display.trackUrl
     ? `### [${escapeMarkdown(display.trackTitle)}](${display.trackUrl})`
     : `### ${escapeMarkdown(display.trackTitle)}`;
 
-  const author = escapeMarkdown(display.trackAuthor);
-  const requester = display.requestedById ? `<@${display.requestedById}>` : "Inconnu";
-
   const heroText = [
-    `## ${normalizeEmoji(emoji)} ${motionFrame} ${playbackLabel} | Quantum Control Deck`,
+    `## ${normalizeEmoji(emoji)} Quantum Neural Deck`,
     title,
-    `**${provider}** • **${formatDuration(display.trackDurationMs)}** • requested by ${requester}`,
+    `**${provider}** • **${playback}** • demandé par ${display.requestedById ? `<@${display.requestedById}>` : "n/a"}`,
     "",
-    `**${elapsed}** ${inlineCode(progressBar)} **${duration}**`,
-    `> ${author}`
+    `${inlineCode(progressBar)}  ${formatDuration(display.trackPositionMs)} / ${formatDuration(display.trackDurationMs)}`,
+    `> ${escapeMarkdown(display.trackAuthor)}`
   ].join("\n");
 
   const modeLines = normalizeMultiline(display.modeInfo).map((line) => `- ${escapeMarkdown(line)}`);
@@ -131,7 +113,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Mode Deck\n${modeLines.join("\n")}`
+      content: `### Telemetrie\n${modeLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -140,7 +122,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Playlist Queue\n${queueLines.join("\n")}`
+      content: `### File Active\n${queueLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -149,7 +131,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Queue Health\n${healthLines.join("\n")}`
+      content: `### Integrite\n${healthLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -158,7 +140,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Session Pulse\n${sessionLines.join("\n")}`
+      content: `### Session\n${sessionLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -202,26 +184,26 @@ export function buildPanelComponents(
   disabled = false
 ): ActionRowBuilder<ButtonBuilder>[] {
   const pauseLabel = state.paused ? "Reprendre" : "Pause";
-  const pauseEmoji = state.paused ? "\u{25B6}\u{FE0F}" : "\u{23EF}\u{FE0F}";
+  const pauseEmoji = state.paused ? "??" : "??";
   const loopLabel =
     state.repeatMode === "off"
-      ? "Boucle:Arret"
+      ? "Loop:Off"
       : state.repeatMode === "track"
-        ? "Boucle:Piste"
-        : "Boucle:File";
-  const autoplayLabel = state.autoplay ? "Lecture auto:Oui" : "Lecture auto:Non";
+        ? "Loop:1"
+        : "Loop:All";
+  const autoplayLabel = state.autoplay ? "Auto:On" : "Auto:Off";
 
   const rowOne = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeDown)
-      .setLabel("Moins")
-      .setEmoji("\u{1F509}")
+      .setLabel("Vol-")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.previous)
       .setLabel("Retour")
-      .setEmoji("\u{23EE}\u{FE0F}")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
@@ -232,14 +214,14 @@ export function buildPanelComponents(
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.skip)
-      .setLabel("Suivante")
-      .setEmoji("\u{23ED}\u{FE0F}")
+      .setLabel("Skip")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Primary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeUp)
-      .setLabel("Plus")
-      .setEmoji("\u{1F50A}")
+      .setLabel("Vol+")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -251,32 +233,32 @@ export function buildPanelComponents(
   const rowTwo = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.shuffle)
-      .setLabel("Melange")
-      .setEmoji("\u{1F500}")
+      .setLabel("Shuffle")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.loop)
       .setLabel(loopLabel)
-      .setEmoji("\u{1F501}")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.stop)
-      .setLabel("Arret")
-      .setEmoji("\u{23F9}\u{FE0F}")
+      .setLabel("Stop")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Danger)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.autoplay)
       .setLabel(autoplayLabel)
-      .setEmoji("\u{1F916}")
-      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("??")
+      .setStyle(state.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.voteSkip)
-      .setLabel("Vote Skip")
-      .setEmoji("\u{1F5F3}\u{FE0F}")
+      .setLabel("Vote")
+      .setEmoji("???")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -284,8 +266,8 @@ export function buildPanelComponents(
   const rowThree = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.playlist)
-      .setLabel("File")
-      .setEmoji("\u{1F3B6}")
+      .setLabel("Apercu file")
+      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -295,214 +277,150 @@ export function buildPanelComponents(
 
 export function disablePanelRows(
   rows: ReadonlyArray<{ components: ReadonlyArray<unknown> }>
-): ActionRowBuilder<any>[] {
-  const convertedRows: ActionRowBuilder<any>[] = [];
-  for (const row of rows) {
-    const actionRow = new ActionRowBuilder<any>();
-    for (const component of row.components) {
-      if (!component || typeof component !== "object") {
-        continue;
-      }
+): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  return rows.map((row) => {
+    const mapped = row.components
+      .map((component) => {
+        if (!component || typeof component !== "object") {
+          return null;
+        }
 
-      const type = (component as { type?: number }).type;
-      if (type === ComponentType.Button) {
-        actionRow.addComponents(ButtonBuilder.from(component as any).setDisabled(true));
-        continue;
-      }
+        const type = (component as { type?: number }).type;
+        if (type === ComponentType.Button) {
+          return ButtonBuilder.from(component as never).setDisabled(true);
+        }
 
-      if (type === ComponentType.StringSelect) {
-        actionRow.addComponents(StringSelectMenuBuilder.from(component as any).setDisabled(true));
-      }
-    }
+        if (type === ComponentType.StringSelect) {
+          return StringSelectMenuBuilder.from(component as never).setDisabled(true);
+        }
 
-    if (actionRow.components.length > 0) {
-      convertedRows.push(actionRow);
-    }
-  }
+        return null;
+      })
+      .filter(
+        (component): component is ButtonBuilder | StringSelectMenuBuilder => component !== null
+      );
 
-  return convertedRows;
+    return new ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>().addComponents(mapped);
+  });
 }
 
-export function withPanelStatus(
-  embeds: ReadonlyArray<Embed | APIEmbed>,
-  status: string
-): EmbedBuilder[] {
-  const first = embeds[0];
-  if (!first) {
-    return [];
-  }
-
-  const builder = EmbedBuilder.from(first).setTimestamp(new Date());
-  builder.setFooter({ text: buildFooterText(status) });
-  return [builder];
+export function withPanelStatus(status: string): string {
+  return buildFooterText(status);
 }
 
 function buildJumpRow(
-  jumpTargets: MusicPanelDisplay["jumpTargets"],
+  targets: MusicPanelDisplay["jumpTargets"],
   disabled: boolean
 ): ActionRowBuilder<StringSelectMenuBuilder> | null {
-  if (jumpTargets.length === 0) {
+  const options = targets.slice(0, 25).map((target) => {
+    const option: { label: string; value: string; description?: string } = {
+      label: target.label.slice(0, 100),
+      value: target.value
+    };
+
+    if (target.description) {
+      option.description = target.description.slice(0, 100);
+    }
+
+    return option;
+  });
+
+  if (options.length === 0) {
     return null;
   }
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(PANEL_SELECTS.jump)
-    .setPlaceholder("Jump to a track")
-    .setMinValues(1)
-    .setMaxValues(1)
-    .setDisabled(disabled)
-    .addOptions(
-      jumpTargets.slice(0, 25).map((option) => {
-        const base = {
-          label: truncateLabel(option.label, 100),
-          value: option.value
-        };
-
-        if (!option.description) {
-          return base;
-        }
-
-        return {
-          ...base,
-          description: truncateLabel(option.description, 100)
-        };
-      })
-    );
+    .setPlaceholder("Jump instantane dans la file")
+    .addOptions(options)
+    .setDisabled(disabled);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
-function formatProvider(provider: string): string {
-  switch (provider.toLowerCase()) {
-    case "youtube":
-      return "YouTube";
-    case "youtube music":
-    case "youtubemusic":
-    case "youtube_music":
-      return "YouTube Music";
-    case "youtube_search":
-      return "Recherche YouTube";
-    case "youtube_music_search":
-      return "Recherche YouTube Music";
-    case "soundcloud":
-      return "SoundCloud";
-    case "spotify":
-      return "Spotify";
-    case "apple_music":
-      return "Apple Music";
-    case "deezer":
-      return "Deezer";
-    case "direct_url":
-      return "URL directe";
-    default:
-      return provider;
+function buildProgressBar(positionMs: number, durationMs: number, size: number): string {
+  if (durationMs <= 0) {
+    return "•".repeat(size);
   }
+
+  const ratio = Math.max(0, Math.min(1, positionMs / Math.max(durationMs, 1)));
+  const cursor = Math.min(size - 1, Math.max(0, Math.round(ratio * (size - 1))));
+  let bar = "";
+
+  for (let index = 0; index < size; index += 1) {
+    if (index === cursor) {
+      bar += "?";
+      continue;
+    }
+
+    bar += index < cursor ? "-" : "·";
+  }
+
+  return bar;
+}
+
+function normalizeEmoji(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "??";
+}
+
+function formatProvider(sourceName: string): string {
+  const source = sourceName.trim().toLowerCase();
+  if (source.includes("spotify")) {
+    return "Spotify";
+  }
+
+  if (source.includes("youtube")) {
+    return "YouTube";
+  }
+
+  if (source === "unknown") {
+    return "Source inconnue";
+  }
+
+  return sourceName || "Source inconnue";
 }
 
 function getPanelColor(sourceName: string): number {
-  switch (sourceName.toLowerCase()) {
-    case "youtube":
-      return 0xff2d55;
-    case "youtube music":
-    case "youtubemusic":
-    case "youtube_music":
-      return 0xff3d71;
-    case "soundcloud":
-      return 0xff7a18;
-    case "spotify":
-      return 0x1ed760;
-    case "apple_music":
-      return 0xfa2d48;
-    case "deezer":
-      return 0x00b8ff;
-    default:
-      return 0x2b90ff;
-  }
-}
+  const source = sourceName.trim().toLowerCase();
 
-function buildProgressBar(positionMs: number, durationMs: number, size: number): string {
-  if (!Number.isFinite(durationMs) || durationMs <= 0) {
-    return "[live stream]";
+  if (source.includes("spotify")) {
+    return 0x1ed760;
   }
 
-  const clampedPosition = Math.max(0, Math.min(positionMs, durationMs));
-  const ratio = durationMs > 0 ? clampedPosition / durationMs : 0;
-  const filled = Math.max(0, Math.min(size, Math.round(ratio * size)));
-  const left = "=".repeat(filled);
-  const right = "-".repeat(Math.max(0, size - filled));
-  return `[${left}${right}]`;
-}
-
-function getSpinnerFrame(positionMs: number): string {
-  if (!Number.isFinite(positionMs) || positionMs <= 0) {
-    return SPINNER_FRAMES[0] ?? "|";
+  if (source.includes("youtube")) {
+    return 0xff355e;
   }
 
-  const index = Math.floor(positionMs / 1800) % SPINNER_FRAMES.length;
-  return SPINNER_FRAMES[index] ?? "|";
+  return 0x2b90ff;
 }
 
 function buildFooterText(status?: string): string {
-  const base = "Control Deck actif";
-  if (!status) {
-    return base;
+  const timestamp = new Date().toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+
+  if (status && status.trim().length > 0) {
+    return `Neural Deck • ${status.trim().slice(0, 180)} • ${timestamp}`;
   }
 
-  const safeStatus = status.replace(/\s+/g, " ").trim().slice(0, 180);
-  if (!safeStatus) {
-    return base;
-  }
-
-  return `${base} | ${safeStatus}`.slice(0, 2048);
+  return `Neural Deck • Synchronisation live • ${timestamp}`;
 }
 
 function normalizeMultiline(value: string): string[] {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return ["Aucune donnee disponible."];
-  }
-
-  return trimmed
-    .split("\n")
+  return value
+    .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 }
 
-function normalizeEmoji(emoji: string): string {
-  const trimmed = emoji.trim();
-  if (!trimmed) {
-    return "\u{1F3B5}";
-  }
-
-  return trimmed;
-}
-
 function inlineCode(value: string): string {
-  return `\`${value.replace(/`/g, "'")}\``;
+  return `\`${value}\``;
 }
 
 function escapeMarkdown(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/\*/g, "\\*")
-    .replace(/_/g, "\\_")
-    .replace(/~/g, "\\~")
-    .replace(/\|/g, "\\|")
-    .replace(/`/g, "\\`")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)");
+  return value.replace(/[\\`*_{}[\]()#+\-.!|>]/g, "\\$&");
 }
 
-function truncateLabel(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  if (maxLength <= 3) {
-    return value.slice(0, maxLength);
-  }
-
-  return `${value.slice(0, maxLength - 3)}...`;
-}

@@ -1,4 +1,4 @@
-services:
+﻿services:
   bot:
     build: .
     container_name: quantum-jukebox
@@ -7,10 +7,35 @@ services:
       - .env
     depends_on:
       - lavalink
+      - postgres
+      - redis
     environment:
       LAVALINK_HOST: lavalink
+      POSTGRES_URL: ${POSTGRES_URL:-postgresql://quantum:quantum@postgres:5432/quantum_jukebox}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: quantum-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quantum_jukebox
+      POSTGRES_USER: quantum
+      POSTGRES_PASSWORD: quantum
+    ports:
+      - "5432:5432"
     volumes:
-      - ./data:/app/data
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: quantum-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
 
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4
@@ -26,7 +51,6 @@ services:
       LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
-      DEEZER_MASTER_DECRYPTION_KEY: ${DEEZER_MASTER_DECRYPTION_KEY:-}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml
 
@@ -36,3 +60,8 @@ services:
     restart: unless-stopped
     environment:
       IGNORE_SCRIPT_REGION: "true"
+
+volumes:
+  postgres_data:
+  redis_data:
+

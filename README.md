@@ -1,38 +1,115 @@
-# Quantum Jukebox
+﻿# Quantum Jukebox
 
-Quantum Jukebox is a modular Discord music bot inspired by Star Citizen, built to reach a high-end feature set similar to Lara-style music bots:
+Bot musical Discord orienté **un seul serveur Discord** et prêt pour un déploiement **multi-réplicas** sur une seule machine/infra.
 
-- multi-provider playback and playlist URLs (YouTube, SoundCloud, Spotify/Apple/Deezer metadata via LavaSrc)
-- advanced custom playlist system per server
-- autoplay and 24/7 mode
-- DJ role policy
-- filter presets and queue controls
-- single-server deployment (guild-only slash commands)
+## Positionnement
 
-## Tech stack
+Quantum Jukebox est construit pour:
 
-- `discord.js` for slash commands and gateway
-- `lavalink-client` for playback control
-- Lavalink v4 + plugins (`youtube-plugin`, `lavasrc-plugin`)
-- `yt-cipher` sidecar for YouTube cipher stability
-- JSON persistence for guild settings and custom playlists
+- rester simple à opérer en production (Docker Compose)
+- rester stable en multi-instance (état partagé + verrous distribués)
+- limiter strictement les providers à **YouTube** et **Spotify**
+- proposer une expérience visuelle moderne avec un panel interactif
 
-## Project layout
+## Fonctionnalités clés
+
+| Domaine | Comportement |
+| --- | --- |
+| Sources audio | YouTube (prioritaire en recherche texte), Spotify (liens directs) |
+| Fallback providers | Désactivé (pas de SoundCloud / Apple / Deezer) |
+| Playlists | Import complet des liens playlists, limite d'import à 101 pistes |
+| Multi-réplicas | Locks Redis + état partagé PostgreSQL |
+| Persistance | Paramètres serveur, playlists custom, registre des panels |
+| UI | Panel interactif + image générée côté bot |
+| Langue | Messages utilisateur en français |
+
+## Architecture runtime
 
 ```text
-src/
-  commands/                  slash commands
-  config/                    env parsing and runtime config
-  core/                      client, command registry, interaction helpers
-  modules/music/             lavalink + playback + filters + autoplay + 24/7
-  modules/playlists/         custom playlist storage/service
-  modules/policies/          DJ policy checks
-  modules/providers/         provider/query resolver
+Discord Gateway/API
+        |
+        v
++---------------------+
+|   quantum-jukebox   |  (N replicas possibles)
+| discord.js + logic  |
++----+-----------+----+
+     |           |
+     |           +--> Redis (locks distribués)
+     |
+     +--> PostgreSQL (settings, playlists, panels)
+     |
+     +--> Lavalink v4 (+ youtube-plugin + lavasrc)
+                |
+                +--> yt-cipher
 ```
 
-## Commands (current)
+## Stack technique
 
-- `/play query:<url|text>`
+- `discord.js`
+- `lavalink-client`
+- Lavalink v4 + `youtube-plugin` + `lavasrc-plugin`
+- `@napi-rs/canvas`
+- `PostgreSQL`
+- `Redis`
+- `Docker Compose`
+
+## Prérequis
+
+- Docker + Docker Compose
+- Un bot Discord déjà créé
+- Le bot invité dans le serveur cible
+- Variables Discord valides dans `.env`
+
+## Configuration
+
+Copier l'exemple:
+
+```bash
+cp .env.example .env
+```
+
+Variables importantes:
+
+- `DISCORD_TOKEN`
+- `DISCORD_CLIENT_ID`
+- `DISCORD_GUILD_ID`
+- `POSTGRES_URL` (défaut fourni)
+- `REDIS_URL` (défaut fourni)
+- `LAVALINK_PASSWORD`
+- `MAX_TRACKS_PER_PLAYLIST` (clampé automatiquement à `101`)
+
+## Démarrage
+
+### Stack complète
+
+```bash
+docker compose up -d --build
+```
+
+### Vérifier les services
+
+```bash
+docker compose ps
+docker compose logs --tail=200 bot
+```
+
+### Arrêt propre
+
+```bash
+docker compose down
+```
+
+## Mode multi-réplicas (même serveur)
+
+Exemple avec 3 instances bot:
+
+```bash
+docker compose up -d --scale bot=3
+```
+
+## Commandes principales
+
+- `/play query:<url|texte>`
 - `/queue`
 - `/nowplaying`
 - `/skip`
@@ -53,48 +130,38 @@ src/
 - `/playlist add name query`
 - `/playlist savecurrent name`
 - `/playlist savequeue name`
+- `/playlist savesession name [limit<=101]`
 - `/playlist remove name index`
 - `/playlist play name [shuffle]`
 
-## Quick start (local)
+## Contrat produit actuel
 
-1. Install dependencies:
+- Providers autorisés: **YouTube + Spotify uniquement**
+- Recherche texte: **YouTube prioritaire**
+- Liens externes non supportés: rejet explicite
+- Import playlist: max `101` pistes par opération
+
+## Développement local
 
 ```bash
 npm install
-```
-
-2. Create env file:
-
-```bash
-cp .env.example .env
-```
-
-3. Fill `.env` with your Discord token, app/client id, and your target Discord server id (`DISCORD_GUILD_ID`).
-
-4. Start Lavalink + yt-cipher:
-
-```bash
-docker compose up -d yt-cipher lavalink
-```
-
-5. Run the bot:
-
-```bash
+npm run check
+npm run build
 npm run dev
 ```
 
-## Full Docker run
+## Dépannage
 
-```bash
-docker compose up -d --build
-```
+### `DiscordAPIError[50001]: Missing Access`
 
-## Notes
+Cause fréquente: bot non présent dans le serveur cible, ou mauvais `DISCORD_GUILD_ID`, ou permissions insuffisantes sur l'application.
 
-- Spotify/Apple/Deezer playback depends on Lavalink plugin support and credentials; direct audio is not streamed from those services, tracks are resolved to playable sources.
-- YouTube playback uses `yt-cipher` through `remoteCipher` to reduce breakages caused by frequent player-script changes.
-- `YOUTUBE_FALLBACK_SOURCE` controls which search source is tried first when a YouTube track fails (`scsearch`, `ytsearch`, `ytmsearch`).
-- `MUSIC_PANEL_EMOJI` accepts unicode or custom animated Discord emoji syntax (`<a:name:id>`).
-- Commands are registered in `DISCORD_GUILD_ID` only (optimized for one-server deployment).
-- `DJ_ROLE_IDS` accepts comma-separated role ids.
+Vérifier:
+
+- le bot est bien invité dans le serveur
+- `DISCORD_GUILD_ID` correspond au bon serveur
+- les scopes OAuth2 et permissions Discord sont corrects
+
+### Erreur de connexion PostgreSQL/Redis au boot
+
+Les dépendances peuvent démarrer juste après le bot au premier boot. En mode Compose, la reprise automatique du conteneur bot corrige généralement ce point.

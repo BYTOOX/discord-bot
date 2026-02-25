@@ -1,16 +1,10 @@
-import type { SearchQuery } from "lavalink-client";
+﻿import type { SearchQuery } from "lavalink-client";
 
-export type ProviderMode =
-  | "auto"
-  | "youtube"
-  | "youtube_music"
-  | "soundcloud"
-  | "spotify"
-  | "apple_music"
-  | "deezer";
+export type ProviderName = "youtube" | "spotify" | "youtube_search";
 
 export interface ProviderResolution {
-  provider: string;
+  provider: ProviderName;
   searchQuery: SearchQuery;
   isLikelyPlaylist: boolean;
 }
+

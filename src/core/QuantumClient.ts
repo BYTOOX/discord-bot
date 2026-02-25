@@ -1,4 +1,4 @@
-import {
+﻿import {
   AttachmentBuilder,
   Client,
   Collection,
@@ -11,15 +11,15 @@ import {
 import type { Logger } from "pino";
 
 import type { AppConfig } from "../config/env";
-import { AccessPolicyService } from "../modules/policies/AccessPolicyService";
-import { sendReply } from "./interactionReply";
-import { CommandRegistry } from "./CommandRegistry";
-import type { SlashCommand } from "./types";
-import { ProviderResolver } from "../modules/providers/ProviderResolver";
+import { PostgresService } from "../modules/infrastructure/PostgresService";
+import { RedisLockService } from "../modules/infrastructure/RedisLockService";
 import { CustomPlaylistService } from "../modules/playlists/CustomPlaylistService";
+import { AccessPolicyService } from "../modules/policies/AccessPolicyService";
+import { ProviderResolver } from "../modules/providers/ProviderResolver";
 import { GuildSettingsService } from "../modules/music/GuildSettingsService";
 import { LavalinkService } from "../modules/music/LavalinkService";
 import { MusicService } from "../modules/music/MusicService";
+import { PanelRegistryService, type RegisteredPanel } from "../modules/music/PanelRegistryService";
 import type { MusicPanelDisplay } from "../modules/music/types";
 import {
   buildMusicPanel,
@@ -29,22 +29,30 @@ import {
   type PanelState
 } from "../modules/music/MusicPanel";
 import { renderMusicPanelImage } from "../modules/music/MusicPanelImage";
+import { CommandRegistry } from "./CommandRegistry";
+import { sendReply } from "./interactionReply";
+import type { SlashCommand } from "./types";
 
 const PANEL_LIVE_REFRESH_MS = 7_000;
+const INTERACTION_LOCK_TTL_MS = 20_000;
+const PANEL_BUSY_LOCK_TTL_MS = 8_000;
+const COMMAND_PUBLISH_LOCK_TTL_MS = 90_000;
 
 export class QuantumClient extends Client {
   public readonly config: AppConfig;
   public readonly logger: Logger;
   public readonly commands = new Collection<string, SlashCommand>();
+  public readonly postgresService: PostgresService;
+  public readonly redisLockService: RedisLockService;
   public readonly commandRegistry: CommandRegistry;
   public readonly accessPolicy: AccessPolicyService;
   public readonly playlistService: CustomPlaylistService;
   public readonly guildSettingsService: GuildSettingsService;
   public readonly providerResolver: ProviderResolver;
+  public readonly panelRegistryService: PanelRegistryService;
   public readonly lavalinkService: LavalinkService;
   public readonly musicService: MusicService;
   private eventHandlersBound = false;
-  private readonly panelBusyMessages = new Set<string>();
   private readonly activeMusicPanels = new Map<string, { channelId: string; messageId: string }>();
   private panelLiveTicker: NodeJS.Timeout | null = null;
 
@@ -55,10 +63,12 @@ export class QuantumClient extends Client {
 
     this.config = config;
     this.logger = logger;
+    this.postgresService = new PostgresService(config.postgresUrl, logger.child({ scope: "postgres" }));
+    this.redisLockService = new RedisLockService(config.redisUrl, logger.child({ scope: "redis" }));
     this.commandRegistry = new CommandRegistry(config, logger.child({ scope: "commands" }));
     this.accessPolicy = new AccessPolicyService(config);
     this.playlistService = new CustomPlaylistService(
-      config.playlistStorePath,
+      this.postgresService,
       {
         maxPlaylists: config.maxCustomPlaylists,
         maxTracksPerPlaylist: config.maxTracksPerPlaylist
@@ -66,7 +76,7 @@ export class QuantumClient extends Client {
       logger.child({ scope: "playlists" })
     );
     this.guildSettingsService = new GuildSettingsService(
-      config.guildSettingsStorePath,
+      this.postgresService,
       {
         autoplay: config.autoplayDefault,
         stayInVoice: config.stayInVoiceDefault,
@@ -75,6 +85,10 @@ export class QuantumClient extends Client {
       logger.child({ scope: "guild-settings" })
     );
     this.providerResolver = new ProviderResolver();
+    this.panelRegistryService = new PanelRegistryService(
+      this.postgresService,
+      logger.child({ scope: "panel-registry" })
+    );
     this.lavalinkService = new LavalinkService(this, config, logger.child({ scope: "lavalink" }));
     this.musicService = new MusicService(
       this.lavalinkService,
@@ -83,7 +97,6 @@ export class QuantumClient extends Client {
       this.guildSettingsService,
       config.playerEmptyTimeoutMs,
       config.playerSelfDeaf,
-      config.youtubeFallbackSource,
       logger.child({ scope: "music" })
     );
   }
@@ -96,20 +109,42 @@ export class QuantumClient extends Client {
   }
 
   public async start(): Promise<void> {
+    await this.postgresService.initialize();
+    await this.redisLockService.initialize();
     this.bindEvents();
     await this.login(this.config.discordToken);
   }
 
-  public registerMusicPanelMessage(guildId: string, channelId: string, messageId: string): void {
+  public async registerMusicPanelMessage(
+    guildId: string,
+    channelId: string,
+    messageId: string
+  ): Promise<void> {
     this.activeMusicPanels.set(guildId, { channelId, messageId });
+    await this.panelRegistryService.set(guildId, channelId, messageId);
   }
 
-  public getRegisteredMusicPanel(guildId: string): { channelId: string; messageId: string } | null {
-    return this.activeMusicPanels.get(guildId) ?? null;
+  public async getRegisteredMusicPanel(
+    guildId: string
+  ): Promise<{ channelId: string; messageId: string } | null> {
+    const cached = this.activeMusicPanels.get(guildId);
+    if (cached) {
+      return cached;
+    }
+
+    const stored = await this.panelRegistryService.get(guildId);
+    if (!stored) {
+      return null;
+    }
+
+    const value = { channelId: stored.channelId, messageId: stored.messageId };
+    this.activeMusicPanels.set(guildId, value);
+    return value;
   }
 
-  public clearRegisteredMusicPanel(guildId: string): boolean {
-    return this.activeMusicPanels.delete(guildId);
+  public async clearRegisteredMusicPanel(guildId: string): Promise<boolean> {
+    this.activeMusicPanels.delete(guildId);
+    return this.panelRegistryService.clear(guildId);
   }
 
   public async getPanelDisplayOrFallback(
@@ -125,7 +160,7 @@ export class QuantumClient extends Client {
   }
 
   public async refreshRegisteredMusicPanel(guildId: string, status?: string): Promise<boolean> {
-    const target = this.activeMusicPanels.get(guildId);
+    const target = await this.getRegisteredMusicPanel(guildId);
     if (!target) {
       return false;
     }
@@ -133,7 +168,8 @@ export class QuantumClient extends Client {
     try {
       const channel = await this.channels.fetch(target.channelId);
       if (!channel || !channel.isTextBased() || !("messages" in channel)) {
-        this.activeMusicPanels.delete(guildId);
+        await this.clearRegisteredMusicPanel(guildId);
+        this.panelRegistryService.reportInvalid(guildId, target.channelId, target.messageId);
         return false;
       }
 
@@ -166,7 +202,7 @@ export class QuantumClient extends Client {
       return true;
     } catch (error) {
       this.logger.warn({ err: error, guildId }, "Impossible de rafraichir le panneau musique");
-      this.activeMusicPanels.delete(guildId);
+      await this.clearRegisteredMusicPanel(guildId);
       return false;
     }
   }
@@ -183,7 +219,23 @@ export class QuantumClient extends Client {
       );
 
       await this.musicService.initialize(readyClient.user.id, readyClient.user.username);
-      await this.commandRegistry.publish();
+
+      const publishLockKey = `commands:publish:${this.config.discordGuildId}`;
+      const publishToken = await this.redisLockService.acquire(
+        publishLockKey,
+        COMMAND_PUBLISH_LOCK_TTL_MS
+      );
+
+      if (!publishToken) {
+        this.logger.info("Publication des commandes ignoree: un replica est deja en charge.");
+        return;
+      }
+
+      try {
+        await this.commandRegistry.publish();
+      } finally {
+        await this.redisLockService.release(publishLockKey, publishToken);
+      }
     });
 
     this.on(Events.Raw, (payload) => {
@@ -219,46 +271,56 @@ export class QuantumClient extends Client {
   }
 
   private async handleInteraction(interaction: Interaction): Promise<void> {
-    if (interaction.isButton()) {
-      await this.handleButtonInteraction(interaction);
-      return;
-    }
-
-    if (interaction.isStringSelectMenu()) {
-      await this.handleSelectInteraction(interaction);
-      return;
-    }
-
-    if (!interaction.isChatInputCommand()) {
-      return;
-    }
-
-    const command = this.commands.get(interaction.commandName);
-    if (!command) {
-      await sendReply(interaction, {
-        content: "Commande inconnue.",
-        ephemeral: true
-      });
+    const lockKey = `interaction:${interaction.id}`;
+    const lockToken = await this.redisLockService.acquire(lockKey, INTERACTION_LOCK_TTL_MS);
+    if (!lockToken) {
       return;
     }
 
     try {
-      await command.execute(interaction, this);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Erreur de commande inattendue.";
-      this.logger.error(
-        {
-          err: error,
-          command: command.data.name,
-          guildId: interaction.guildId,
-          userId: interaction.user.id
-        },
-        "Echec execution commande"
-      );
-      await sendReply(interaction, {
-        content: `Erreur: ${message}`,
-        ephemeral: true
-      });
+      if (interaction.isButton()) {
+        await this.handleButtonInteraction(interaction);
+        return;
+      }
+
+      if (interaction.isStringSelectMenu()) {
+        await this.handleSelectInteraction(interaction);
+        return;
+      }
+
+      if (!interaction.isChatInputCommand()) {
+        return;
+      }
+
+      const command = this.commands.get(interaction.commandName);
+      if (!command) {
+        await sendReply(interaction, {
+          content: "Commande inconnue.",
+          ephemeral: true
+        });
+        return;
+      }
+
+      try {
+        await command.execute(interaction, this);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erreur de commande inattendue.";
+        this.logger.error(
+          {
+            err: error,
+            command: command.data.name,
+            guildId: interaction.guildId,
+            userId: interaction.user.id
+          },
+          "Echec execution commande"
+        );
+        await sendReply(interaction, {
+          content: `Erreur: ${message}`,
+          ephemeral: true
+        });
+      }
+    } finally {
+      await this.redisLockService.release(lockKey, lockToken);
     }
   }
 
@@ -266,6 +328,8 @@ export class QuantumClient extends Client {
     if (!isMusicPanelAction(interaction.customId)) {
       return;
     }
+
+    let busyToken: string | null = null;
 
     try {
       if (!interaction.guild) {
@@ -294,7 +358,11 @@ export class QuantumClient extends Client {
         return;
       }
 
-      if (this.panelBusyMessages.has(interaction.message.id)) {
+      busyToken = await this.redisLockService.acquire(
+        `panel:busy:${guildId}:${interaction.message.id}`,
+        PANEL_BUSY_LOCK_TTL_MS
+      );
+      if (!busyToken) {
         await interaction.reply({
           content: "Une action est deja en cours sur ce panneau, reessaie dans une seconde.",
           ephemeral: true
@@ -302,10 +370,9 @@ export class QuantumClient extends Client {
         return;
       }
 
-      this.panelBusyMessages.add(interaction.message.id);
       await interaction.deferUpdate();
       const result = await this.musicService.handlePanelAction(interaction);
-      this.registerMusicPanelMessage(guildId, interaction.channelId, interaction.message.id);
+      await this.registerMusicPanelMessage(guildId, interaction.channelId, interaction.message.id);
       await this.refreshRegisteredMusicPanel(guildId, result.message);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erreur bouton inattendue.";
@@ -325,7 +392,12 @@ export class QuantumClient extends Client {
         await interaction.reply({ content: `Erreur: ${message}`, ephemeral: true });
       }
     } finally {
-      this.panelBusyMessages.delete(interaction.message.id);
+      if (busyToken && interaction.guildId) {
+        await this.redisLockService.release(
+          `panel:busy:${interaction.guildId}:${interaction.message.id}`,
+          busyToken
+        );
+      }
     }
   }
 
@@ -333,6 +405,8 @@ export class QuantumClient extends Client {
     if (!isMusicPanelSelectAction(interaction.customId)) {
       return;
     }
+
+    let busyToken: string | null = null;
 
     try {
       if (!interaction.guild) {
@@ -361,7 +435,11 @@ export class QuantumClient extends Client {
         return;
       }
 
-      if (this.panelBusyMessages.has(interaction.message.id)) {
+      busyToken = await this.redisLockService.acquire(
+        `panel:busy:${guildId}:${interaction.message.id}`,
+        PANEL_BUSY_LOCK_TTL_MS
+      );
+      if (!busyToken) {
         await interaction.reply({
           content: "Une action est deja en cours sur ce panneau, reessaie dans une seconde.",
           ephemeral: true
@@ -369,10 +447,9 @@ export class QuantumClient extends Client {
         return;
       }
 
-      this.panelBusyMessages.add(interaction.message.id);
       await interaction.deferUpdate();
       const result = await this.musicService.handlePanelSelectAction(interaction);
-      this.registerMusicPanelMessage(guildId, interaction.channelId, interaction.message.id);
+      await this.registerMusicPanelMessage(guildId, interaction.channelId, interaction.message.id);
       await this.refreshRegisteredMusicPanel(guildId, result.message);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Erreur menu inattendue.";
@@ -392,7 +469,12 @@ export class QuantumClient extends Client {
         await interaction.reply({ content: `Erreur: ${message}`, ephemeral: true });
       }
     } finally {
-      this.panelBusyMessages.delete(interaction.message.id);
+      if (busyToken && interaction.guildId) {
+        await this.redisLockService.release(
+          `panel:busy:${interaction.guildId}:${interaction.message.id}`,
+          busyToken
+        );
+      }
     }
   }
 
@@ -444,10 +526,10 @@ export class QuantumClient extends Client {
       isPlaying: false,
       isPaused: false,
       accentColor: 0x2b90ff,
-      sourceName: "direct_url",
+      sourceName: "youtube",
       modeInfo: modeLines.join("\n"),
       playlistInfo: playlistLines.join("\n"),
-      queueHealthInfo: `Etat: Veille\nPistes en attente: ${queue.upcoming.length}\nTemps restant: 0:00\nErreurs recentes: non\nRecherche YouTube degradee: non`,
+      queueHealthInfo: `Etat: Veille\nPistes en attente: ${queue.upcoming.length}\nTemps restant: 0:00\nErreurs recentes: non`,
       sessionInfo: "Session en attente.\nLance une piste pour demarrer le suivi.",
       voteSkipInfo: "Progression: 0/1\nSeuil: 1 vote(s)\nVotants: Aucun vote pour le moment.",
       jumpTargets: []
@@ -472,11 +554,12 @@ export class QuantumClient extends Client {
   }
 
   private async refreshActivePanelsTick(): Promise<void> {
-    if (this.activeMusicPanels.size === 0) {
+    const guildIds = await this.panelRegistryService.listGuildIds();
+    if (guildIds.length === 0) {
       return;
     }
 
-    for (const guildId of this.activeMusicPanels.keys()) {
+    for (const guildId of guildIds) {
       const player = this.musicService.getPlayer(guildId);
       if (!player?.playing) {
         continue;
@@ -494,10 +577,11 @@ export class QuantumClient extends Client {
   ): Promise<AttachmentBuilder | null> {
     try {
       const panelImage = await renderMusicPanelImage(panelDisplay, panelState, status);
-      return new AttachmentBuilder(panelImage, { name: "quantum-panel-v3.png" });
+      return new AttachmentBuilder(panelImage, { name: "quantum-panel-v4.png" });
     } catch (error) {
       this.logger.warn({ err: error, guildId }, "Echec rendu image panel musique");
       return null;
     }
   }
 }
+

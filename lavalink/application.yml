@@ -1,4 +1,4 @@
-server:
+﻿server:
   port: 2333
 
 lavalink:
@@ -6,17 +6,17 @@ lavalink:
     password: ${LAVALINK_SERVER_PASSWORD:youshallnotpass}
     sources:
       youtube: false
-      soundcloud: true
-      bandcamp: true
-      twitch: true
-      vimeo: true
+      soundcloud: false
+      bandcamp: false
+      twitch: false
+      vimeo: false
       http: true
       local: false
     bufferDurationMs: 400
-    youtubePlaylistLoadLimit: 6
+    youtubePlaylistLoadLimit: 101
     playerUpdateInterval: 5
     youtubeSearchEnabled: false
-    soundcloudSearchEnabled: true
+    soundcloudSearchEnabled: false
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.17.0"
       repository: "https://maven.lavalink.dev/releases"
@@ -33,9 +33,7 @@ plugins:
       url: "http://yt-cipher:8001/"
     clients:
       - MUSIC
-      - ANDROID_VR
       - WEB
-      - WEBEMBEDDED
       - MWEB
   lavasrc:
     providers:
@@ -43,7 +41,7 @@ plugins:
       - "ytsearch:%QUERY%"
     sources:
       spotify: true
-      applemusic: true
+      applemusic: false
       deezer: false
       yandexmusic: false
       flowerytts: false
@@ -51,9 +49,11 @@ plugins:
       clientId: "${SPOTIFY_CLIENT_ID}"
       clientSecret: "${SPOTIFY_CLIENT_SECRET}"
       countryCode: "US"
-      playlistLoadLimit: 100
-      albumLoadLimit: 100
+      playlistLoadLimit: 101
+      albumLoadLimit: 101
+
 logging:
   level:
     root: INFO
     lavalink: INFO
+

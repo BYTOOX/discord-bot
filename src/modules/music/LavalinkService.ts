@@ -1,18 +1,55 @@
-import type { Client } from "discord.js";
-import { LavalinkManager } from "lavalink-client";
+﻿import type { Client } from "discord.js";
+import { LavalinkManager, type SearchQuery } from "lavalink-client";
 import type { Logger } from "pino";
 
 import type { AppConfig } from "../../config/env";
 
+export interface LavalinkRawTrack {
+  encoded: string;
+  info: {
+    identifier?: string;
+    isSeekable?: boolean;
+    author?: string;
+    length?: number;
+    isStream?: boolean;
+    position?: number;
+    title?: string;
+    uri?: string;
+    artworkUrl?: string;
+    sourceName?: string;
+  };
+  pluginInfo?: Record<string, unknown>;
+  userData?: Record<string, unknown>;
+}
+
+export type LavalinkLoadResult =
+  | { loadType: "empty"; data: Record<string, never> }
+  | { loadType: "track"; data: LavalinkRawTrack }
+  | { loadType: "search"; data: LavalinkRawTrack[] }
+  | {
+      loadType: "playlist";
+      data: {
+        info: { name?: string; selectedTrack?: number };
+        tracks: LavalinkRawTrack[];
+      };
+    }
+  | {
+      loadType: "error";
+      data: { message?: string; severity?: string; cause?: string };
+    };
+
 export class LavalinkService {
   public readonly manager: LavalinkManager;
   private initialized = false;
+  private readonly baseHttpUrl: string;
 
   public constructor(
     private readonly client: Client,
     private readonly config: AppConfig,
     private readonly logger: Logger
   ) {
+    this.baseHttpUrl = `${config.lavalinkSecure ? "https" : "http"}://${config.lavalinkHost}:${config.lavalinkPort}`;
+
     this.manager = new LavalinkManager({
       nodes: [
         {
@@ -30,7 +67,7 @@ export class LavalinkService {
       autoSkip: true,
       autoMove: true,
       playerOptions: {
-        defaultSearchPlatform: "ytmsearch",
+        defaultSearchPlatform: "ytsearch",
         maxErrorsPerTime: {
           threshold: 120_000,
           maxAmount: 12
@@ -58,6 +95,48 @@ export class LavalinkService {
 
   public async forwardRawEvent(payload: unknown): Promise<void> {
     await this.manager.sendRawData(payload as never);
+  }
+
+  public async loadTracks(searchQuery: SearchQuery): Promise<LavalinkLoadResult> {
+    const identifier = this.toIdentifier(searchQuery);
+    if (identifier.length === 0) {
+      throw new Error("Requete Lavalink vide.");
+    }
+
+    const response = await fetch(
+      `${this.baseHttpUrl}/v4/loadtracks?identifier=${encodeURIComponent(identifier)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: this.config.lavalinkPassword
+        }
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Lavalink indisponible (${response.status}).`);
+    }
+
+    const payload = (await response.json()) as LavalinkLoadResult;
+    return payload;
+  }
+
+  private toIdentifier(searchQuery: SearchQuery): string {
+    if (typeof searchQuery === "string") {
+      return searchQuery.trim();
+    }
+
+    const query = `${searchQuery.query ?? ""}`.trim();
+    const source =
+      typeof (searchQuery as { source?: unknown }).source === "string"
+        ? ((searchQuery as { source: string }).source ?? "").trim()
+        : "";
+
+    if (!query || !source || /^https?:\/\//i.test(query)) {
+      return query;
+    }
+
+    return `${source}:${query}`;
   }
 
   private bindManagerEvents(): void {
@@ -116,3 +195,4 @@ export class LavalinkService {
     });
   }
 }
+

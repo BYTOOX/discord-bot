@@ -7,6 +7,11 @@ const envSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1),
+  POSTGRES_URL: z
+    .string()
+    .url()
+    .default("postgresql://quantum:quantum@localhost:5432/quantum_jukebox"),
+  REDIS_URL: z.string().url().default("redis://localhost:6379"),
   LAVALINK_HOST: z.string().default("localhost"),
   LAVALINK_PORT: z.coerce.number().int().positive().default(2333),
   LAVALINK_PASSWORD: z.string().default("youshallnotpass"),
@@ -32,18 +37,21 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   DJ_ROLE_IDS: z.string().default(""),
   MAX_CUSTOM_PLAYLISTS: z.coerce.number().int().min(1).default(50),
-  MAX_TRACKS_PER_PLAYLIST: z.coerce.number().int().min(1).default(500),
-  PLAYLIST_STORE_PATH: z.string().default("data/custom-playlists.json"),
-  GUILD_SETTINGS_STORE_PATH: z.string().default("data/guild-settings.json"),
-  YOUTUBE_FALLBACK_SOURCE: z
-    .enum(["scsearch", "ytsearch", "ytmsearch"])
-    .default("scsearch")
+  MAX_TRACKS_PER_PLAYLIST: z
+    .coerce
+    .number()
+    .int()
+    .min(1)
+    .default(101)
+    .transform((value) => Math.min(101, value))
 });
 
 export interface AppConfig {
   discordToken: string;
   discordClientId: string;
   discordGuildId: string;
+  postgresUrl: string;
+  redisUrl: string;
   lavalinkHost: string;
   lavalinkPort: number;
   lavalinkPassword: string;
@@ -58,9 +66,6 @@ export interface AppConfig {
   djRoleIds: string[];
   maxCustomPlaylists: number;
   maxTracksPerPlaylist: number;
-  playlistStorePath: string;
-  guildSettingsStorePath: string;
-  youtubeFallbackSource: "scsearch" | "ytsearch" | "ytmsearch";
 }
 
 export function loadConfig(): AppConfig {
@@ -74,6 +79,8 @@ export function loadConfig(): AppConfig {
     discordToken: parsed.DISCORD_TOKEN,
     discordClientId: parsed.DISCORD_CLIENT_ID,
     discordGuildId: parsed.DISCORD_GUILD_ID,
+    postgresUrl: parsed.POSTGRES_URL,
+    redisUrl: parsed.REDIS_URL,
     lavalinkHost: parsed.LAVALINK_HOST,
     lavalinkPort: parsed.LAVALINK_PORT,
     lavalinkPassword: parsed.LAVALINK_PASSWORD,
@@ -87,10 +94,8 @@ export function loadConfig(): AppConfig {
     stayInVoiceDefault: parsed.STAY_IN_VOICE_DEFAULT,
     djRoleIds,
     maxCustomPlaylists: parsed.MAX_CUSTOM_PLAYLISTS,
-    maxTracksPerPlaylist: parsed.MAX_TRACKS_PER_PLAYLIST,
-    playlistStorePath: parsed.PLAYLIST_STORE_PATH,
-    guildSettingsStorePath: parsed.GUILD_SETTINGS_STORE_PATH,
-    youtubeFallbackSource: parsed.YOUTUBE_FALLBACK_SOURCE
+    maxTracksPerPlaylist: parsed.MAX_TRACKS_PER_PLAYLIST
   };
 }
+
 

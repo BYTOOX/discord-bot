@@ -1,26 +1,39 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+﻿import { randomUUID } from "node:crypto";
 
+import type { PoolClient } from "pg";
 import type { Logger } from "pino";
 
+import { PostgresService } from "../infrastructure/PostgresService";
 import type { CustomPlaylist, PlaylistTrackInput, StoredPlaylistTrack } from "./types";
-
-interface PlaylistStoreFile {
-  playlists: CustomPlaylist[];
-}
 
 interface PlaylistLimits {
   maxPlaylists: number;
   maxTracksPerPlaylist: number;
 }
 
-export class CustomPlaylistService {
-  private readonly playlists = new Map<string, CustomPlaylist>();
-  private loaded = false;
+interface PlaylistRow {
+  id: string;
+  guild_id: string;
+  name: string;
+  key: string;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+}
 
+interface PlaylistTrackRow {
+  playlist_id: string;
+  position: number;
+  query: string;
+  title: string;
+  url: string | null;
+  added_by: string;
+  added_at: Date;
+}
+
+export class CustomPlaylistService {
   public constructor(
-    private readonly storePath: string,
+    private readonly postgres: PostgresService,
     private readonly limits: PlaylistLimits,
     private readonly logger: Logger
   ) {}
@@ -30,49 +43,116 @@ export class CustomPlaylistService {
     name: string,
     createdBy: string
   ): Promise<CustomPlaylist> {
-    await this.ensureLoaded();
-
     const normalizedName = normalizePlaylistName(name);
     const key = this.getKey(guildId, normalizedName);
 
-    if (this.playlists.has(key)) {
+    const existing = await this.getPlaylist(guildId, normalizedName);
+    if (existing) {
       throw new Error(`La playlist "${normalizedName}" existe deja.`);
     }
 
-    const guildPlaylists = await this.listPlaylists(guildId);
-    if (guildPlaylists.length >= this.limits.maxPlaylists) {
+    const countResult = await this.postgres.query<{ count: string }>(
+      `
+      SELECT COUNT(*)::text AS count
+      FROM custom_playlists
+      WHERE guild_id = $1
+      `,
+      [guildId]
+    );
+
+    const count = Number.parseInt(countResult.rows[0]?.count ?? "0", 10);
+    if (count >= this.limits.maxPlaylists) {
       throw new Error(`Limite de playlists atteinte (${this.limits.maxPlaylists}).`);
     }
 
-    const now = new Date().toISOString();
-    const playlist: CustomPlaylist = {
-      id: randomUUID(),
-      guildId,
-      name: normalizedName,
-      key,
-      createdBy,
-      createdAt: now,
-      updatedAt: now,
-      tracks: []
-    };
+    const now = new Date();
+    const id = randomUUID();
 
-    this.playlists.set(key, playlist);
-    await this.persist();
+    await this.postgres.query(
+      `
+      INSERT INTO custom_playlists (id, guild_id, name, key, created_by, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $6)
+      `,
+      [id, guildId, normalizedName, key, createdBy, now]
+    );
+
+    const playlist = await this.getPlaylist(guildId, normalizedName);
+    if (!playlist) {
+      throw new Error("Playlist creee mais introuvable ensuite.");
+    }
+
     return playlist;
   }
 
   public async listPlaylists(guildId: string): Promise<CustomPlaylist[]> {
-    await this.ensureLoaded();
+    const playlists = await this.postgres.query<PlaylistRow>(
+      `
+      SELECT id, guild_id, name, key, created_by, created_at, updated_at
+      FROM custom_playlists
+      WHERE guild_id = $1
+      ORDER BY name ASC
+      `,
+      [guildId]
+    );
 
-    return [...this.playlists.values()]
-      .filter((playlist) => playlist.guildId === guildId)
-      .sort((left, right) => left.name.localeCompare(right.name));
+    if (playlists.rows.length === 0) {
+      return [];
+    }
+
+    const ids = playlists.rows.map((row) => row.id);
+    const tracks = await this.postgres.query<PlaylistTrackRow>(
+      `
+      SELECT playlist_id, position, query, title, url, added_by, added_at
+      FROM playlist_tracks
+      WHERE playlist_id = ANY($1::uuid[])
+      ORDER BY playlist_id, position ASC
+      `,
+      [ids]
+    );
+
+    const tracksByPlaylist = new Map<string, StoredPlaylistTrack[]>();
+    for (const trackRow of tracks.rows) {
+      const list = tracksByPlaylist.get(trackRow.playlist_id) ?? [];
+      list.push(this.toStoredTrack(trackRow));
+      tracksByPlaylist.set(trackRow.playlist_id, list);
+    }
+
+    return playlists.rows.map((row) => this.toPlaylist(row, tracksByPlaylist.get(row.id) ?? []));
   }
 
   public async getPlaylist(guildId: string, name: string): Promise<CustomPlaylist | null> {
-    await this.ensureLoaded();
-    const key = this.getKey(guildId, normalizePlaylistName(name));
-    return this.playlists.get(key) ?? null;
+    const normalizedName = normalizePlaylistName(name);
+    const key = this.getKey(guildId, normalizedName);
+
+    const playlistResult = await this.postgres.query<PlaylistRow>(
+      `
+      SELECT id, guild_id, name, key, created_by, created_at, updated_at
+      FROM custom_playlists
+      WHERE key = $1
+      LIMIT 1
+      `,
+      [key]
+    );
+
+    const playlistRow = playlistResult.rows[0];
+    if (!playlistRow) {
+      return null;
+    }
+
+    const tracksResult = await this.postgres.query<PlaylistTrackRow>(
+      `
+      SELECT playlist_id, position, query, title, url, added_by, added_at
+      FROM playlist_tracks
+      WHERE playlist_id = $1
+      ORDER BY position ASC
+      `,
+      [playlistRow.id]
+    );
+
+    return this.toPlaylist(
+      playlistRow,
+      tracksResult.rows.map((trackRow) => this.toStoredTrack(trackRow))
+    );
   }
 
   public async addTrack(
@@ -80,21 +160,12 @@ export class CustomPlaylistService {
     playlistName: string,
     track: PlaylistTrackInput
   ): Promise<CustomPlaylist> {
-    const playlist = await this.mustGetPlaylist(guildId, playlistName);
-
-    if (playlist.tracks.length >= this.limits.maxTracksPerPlaylist) {
+    const result = await this.addTracks(guildId, playlistName, [track]);
+    if (result.addedCount === 0) {
       throw new Error(`Limite de musiques atteinte (${this.limits.maxTracksPerPlaylist}).`);
     }
 
-    const storedTrack: StoredPlaylistTrack = {
-      ...track,
-      addedAt: new Date().toISOString()
-    };
-
-    playlist.tracks.push(storedTrack);
-    playlist.updatedAt = new Date().toISOString();
-    await this.persist();
-    return playlist;
+    return result.playlist;
   }
 
   public async addTracks(
@@ -102,25 +173,59 @@ export class CustomPlaylistService {
     playlistName: string,
     tracks: PlaylistTrackInput[]
   ): Promise<{ addedCount: number; playlist: CustomPlaylist }> {
-    const playlist = await this.mustGetPlaylist(guildId, playlistName);
+    const normalizedName = normalizePlaylistName(playlistName);
+    const key = this.getKey(guildId, normalizedName);
 
     let addedCount = 0;
-    for (const track of tracks) {
-      if (playlist.tracks.length >= this.limits.maxTracksPerPlaylist) {
-        break;
+
+    await this.postgres.runInTransaction(async (client) => {
+      const playlist = await this.mustGetPlaylistForUpdate(client, key, normalizedName);
+
+      const currentCount = await this.countTracks(client, playlist.id);
+      if (currentCount >= this.limits.maxTracksPerPlaylist) {
+        return;
       }
 
-      const storedTrack: StoredPlaylistTrack = {
-        ...track,
-        addedAt: new Date().toISOString()
-      };
-      playlist.tracks.push(storedTrack);
-      addedCount += 1;
-    }
+      let nextPosition = currentCount + 1;
+      for (const track of tracks) {
+        if (nextPosition > this.limits.maxTracksPerPlaylist) {
+          break;
+        }
 
-    if (addedCount > 0) {
-      playlist.updatedAt = new Date().toISOString();
-      await this.persist();
+        await client.query(
+          `
+          INSERT INTO playlist_tracks (playlist_id, position, query, title, url, added_by, added_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `,
+          [
+            playlist.id,
+            nextPosition,
+            track.query,
+            track.title,
+            track.url ?? null,
+            track.addedBy,
+            new Date()
+          ]
+        );
+        nextPosition += 1;
+        addedCount += 1;
+      }
+
+      if (addedCount > 0) {
+        await client.query(
+          `
+          UPDATE custom_playlists
+          SET updated_at = NOW()
+          WHERE id = $1
+          `,
+          [playlist.id]
+        );
+      }
+    });
+
+    const playlist = await this.getPlaylist(guildId, normalizedName);
+    if (!playlist) {
+      throw new Error("Playlist introuvable apres mise a jour.");
     }
 
     return { addedCount, playlist };
@@ -131,62 +236,144 @@ export class CustomPlaylistService {
     playlistName: string,
     index: number
   ): Promise<{ removed: StoredPlaylistTrack; playlist: CustomPlaylist }> {
-    const playlist = await this.mustGetPlaylist(guildId, playlistName);
-    if (index < 1 || index > playlist.tracks.length) {
+    if (index < 1) {
       throw new Error("Index de piste invalide.");
     }
 
-    const removed = playlist.tracks.splice(index - 1, 1)[0];
-    if (!removed) {
+    const normalizedName = normalizePlaylistName(playlistName);
+    const key = this.getKey(guildId, normalizedName);
+    let removedTrack: StoredPlaylistTrack | null = null;
+
+    await this.postgres.runInTransaction(async (client) => {
+      const playlist = await this.mustGetPlaylistForUpdate(client, key, normalizedName);
+
+      const tracksResult = await client.query<PlaylistTrackRow>(
+        `
+        SELECT playlist_id, position, query, title, url, added_by, added_at
+        FROM playlist_tracks
+        WHERE playlist_id = $1
+        ORDER BY position ASC
+        `,
+        [playlist.id]
+      );
+
+      const target = tracksResult.rows[index - 1];
+      if (!target) {
+        throw new Error("Index de piste invalide.");
+      }
+
+      removedTrack = this.toStoredTrack(target);
+
+      await client.query(
+        `
+        DELETE FROM playlist_tracks
+        WHERE playlist_id = $1 AND position = $2
+        `,
+        [playlist.id, target.position]
+      );
+
+      await client.query(
+        `
+        UPDATE playlist_tracks
+        SET position = position - 1
+        WHERE playlist_id = $1 AND position > $2
+        `,
+        [playlist.id, target.position]
+      );
+
+      await client.query(
+        `
+        UPDATE custom_playlists
+        SET updated_at = NOW()
+        WHERE id = $1
+        `,
+        [playlist.id]
+      );
+    });
+
+    if (!removedTrack) {
       throw new Error("Index de piste invalide.");
     }
 
-    playlist.updatedAt = new Date().toISOString();
-    await this.persist();
-    return { removed, playlist };
+    const playlist = await this.getPlaylist(guildId, normalizedName);
+    if (!playlist) {
+      throw new Error("Playlist introuvable apres suppression.");
+    }
+
+    return { removed: removedTrack, playlist };
   }
 
-  private async mustGetPlaylist(guildId: string, name: string): Promise<CustomPlaylist> {
-    const playlist = await this.getPlaylist(guildId, name);
-    if (!playlist) {
-      throw new Error(`Playlist introuvable: "${normalizePlaylistName(name)}".`);
+  private async mustGetPlaylistForUpdate(
+    client: PoolClient,
+    key: string,
+    normalizedName: string
+  ): Promise<PlaylistRow> {
+    const result = await client.query<PlaylistRow>(
+      `
+      SELECT id, guild_id, name, key, created_by, created_at, updated_at
+      FROM custom_playlists
+      WHERE key = $1
+      FOR UPDATE
+      `,
+      [key]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      this.logger.warn({ key }, "Playlist introuvable");
+      throw new Error(`Playlist introuvable: "${normalizedName}".`);
     }
 
-    return playlist;
+    return row;
+  }
+
+  private async countTracks(client: PoolClient, playlistId: string): Promise<number> {
+    const result = await client.query<{ count: string }>(
+      `
+      SELECT COUNT(*)::text AS count
+      FROM playlist_tracks
+      WHERE playlist_id = $1
+      `,
+      [playlistId]
+    );
+
+    return Number.parseInt(result.rows[0]?.count ?? "0", 10);
   }
 
   private getKey(guildId: string, normalizedName: string): string {
     return `${guildId}:${normalizedName}`;
   }
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) {
-      return;
+  private toStoredTrack(row: PlaylistTrackRow): StoredPlaylistTrack {
+    const payload: StoredPlaylistTrack = {
+      query: row.query,
+      title: row.title,
+      addedBy: row.added_by,
+      addedAt: row.added_at.toISOString()
+    };
+
+    if (row.url) {
+      payload.url = row.url;
     }
 
-    try {
-      const raw = await readFile(this.storePath, "utf8");
-      const parsed = JSON.parse(raw) as PlaylistStoreFile;
-      for (const playlist of parsed.playlists ?? []) {
-        this.playlists.set(playlist.key, playlist);
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        this.logger.warn({ err: error }, "Impossible de charger le stockage playlists, store vide");
-      }
-    }
-
-    this.loaded = true;
+    return payload;
   }
 
-  private async persist(): Promise<void> {
-    const payload: PlaylistStoreFile = { playlists: [...this.playlists.values()] };
-    await mkdir(dirname(this.storePath), { recursive: true });
-    await writeFile(this.storePath, JSON.stringify(payload, null, 2), "utf8");
+  private toPlaylist(row: PlaylistRow, tracks: StoredPlaylistTrack[]): CustomPlaylist {
+    return {
+      id: row.id,
+      guildId: row.guild_id,
+      name: row.name,
+      key: row.key,
+      createdBy: row.created_by,
+      createdAt: row.created_at.toISOString(),
+      updatedAt: row.updated_at.toISOString(),
+      tracks
+    };
   }
 }
 
 function normalizePlaylistName(name: string): string {
   return name.trim().toLowerCase();
 }
+

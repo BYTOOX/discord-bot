@@ -1,13 +1,7 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+﻿import type { Logger } from "pino";
 
-import type { Logger } from "pino";
-
+import { PostgresService } from "../infrastructure/PostgresService";
 import type { GuildPlaybackSettings } from "./types";
-
-interface GuildSettingsFile {
-  byGuild: Record<string, GuildPlaybackSettings>;
-}
 
 interface GuildSettingsDefaults {
   autoplay: boolean;
@@ -15,81 +9,118 @@ interface GuildSettingsDefaults {
   volume: number;
 }
 
-export class GuildSettingsService {
-  private readonly cache = new Map<string, GuildPlaybackSettings>();
-  private loaded = false;
+interface GuildSettingsRow {
+  autoplay: boolean;
+  stay_in_voice: boolean;
+  volume: number;
+}
 
+export class GuildSettingsService {
   public constructor(
-    private readonly storePath: string,
+    private readonly postgres: PostgresService,
     private readonly defaults: GuildSettingsDefaults,
     private readonly logger: Logger
   ) {}
 
   public async get(guildId: string): Promise<GuildPlaybackSettings> {
-    await this.ensureLoaded();
+    await this.ensureDefaults(guildId);
 
-    const cached = this.cache.get(guildId);
-    if (cached) {
-      return cached;
+    const result = await this.postgres.query<GuildSettingsRow>(
+      `
+      SELECT autoplay, stay_in_voice, volume
+      FROM guild_settings
+      WHERE guild_id = $1
+      `,
+      [guildId]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      this.logger.warn({ guildId }, "Parametres guild manquants apres initialisation");
+      return { ...this.defaults };
     }
 
-    const settings: GuildPlaybackSettings = {
-      autoplay: this.defaults.autoplay,
-      stayInVoice: this.defaults.stayInVoice,
-      volume: this.defaults.volume
-    };
-    this.cache.set(guildId, settings);
-    await this.persist();
-    return settings;
+    return this.toSettings(row);
   }
 
   public async setAutoplay(guildId: string, enabled: boolean): Promise<GuildPlaybackSettings> {
-    const settings = await this.get(guildId);
-    settings.autoplay = enabled;
-    await this.persist();
-    return settings;
+    const result = await this.postgres.query<GuildSettingsRow>(
+      `
+      UPDATE guild_settings
+      SET autoplay = $2, updated_at = NOW()
+      WHERE guild_id = $1
+      RETURNING autoplay, stay_in_voice, volume
+      `,
+      [guildId, enabled]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      await this.ensureDefaults(guildId);
+      return this.setAutoplay(guildId, enabled);
+    }
+
+    return this.toSettings(row);
   }
 
   public async setStayInVoice(guildId: string, enabled: boolean): Promise<GuildPlaybackSettings> {
-    const settings = await this.get(guildId);
-    settings.stayInVoice = enabled;
-    await this.persist();
-    return settings;
+    const result = await this.postgres.query<GuildSettingsRow>(
+      `
+      UPDATE guild_settings
+      SET stay_in_voice = $2, updated_at = NOW()
+      WHERE guild_id = $1
+      RETURNING autoplay, stay_in_voice, volume
+      `,
+      [guildId, enabled]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      await this.ensureDefaults(guildId);
+      return this.setStayInVoice(guildId, enabled);
+    }
+
+    return this.toSettings(row);
   }
 
   public async setVolume(guildId: string, volume: number): Promise<GuildPlaybackSettings> {
-    const settings = await this.get(guildId);
-    settings.volume = volume;
-    await this.persist();
-    return settings;
-  }
+    const result = await this.postgres.query<GuildSettingsRow>(
+      `
+      UPDATE guild_settings
+      SET volume = $2, updated_at = NOW()
+      WHERE guild_id = $1
+      RETURNING autoplay, stay_in_voice, volume
+      `,
+      [guildId, volume]
+    );
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) {
-      return;
+    const row = result.rows[0];
+    if (!row) {
+      await this.ensureDefaults(guildId);
+      return this.setVolume(guildId, volume);
     }
 
-    try {
-      const raw = await readFile(this.storePath, "utf8");
-      const parsed = JSON.parse(raw) as GuildSettingsFile;
-      for (const [guildId, settings] of Object.entries(parsed.byGuild ?? {})) {
-        this.cache.set(guildId, settings);
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        this.logger.warn({ err: error }, "Failed to load guild settings store");
-      }
-    }
-
-    this.loaded = true;
+    return this.toSettings(row);
   }
 
-  private async persist(): Promise<void> {
-    const byGuild = Object.fromEntries(this.cache.entries());
-    const payload: GuildSettingsFile = { byGuild };
-    await mkdir(dirname(this.storePath), { recursive: true });
-    await writeFile(this.storePath, JSON.stringify(payload, null, 2), "utf8");
+  private async ensureDefaults(guildId: string): Promise<void> {
+    await this.postgres.query(
+      `
+      INSERT INTO guild_settings (guild_id, autoplay, stay_in_voice, volume, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (guild_id)
+      DO NOTHING
+      `,
+      [guildId, this.defaults.autoplay, this.defaults.stayInVoice, this.defaults.volume]
+    );
+  }
+
+  private toSettings(row: GuildSettingsRow): GuildPlaybackSettings {
+    return {
+      autoplay: row.autoplay,
+      stayInVoice: row.stay_in_voice,
+      volume: row.volume
+    };
   }
 }
 

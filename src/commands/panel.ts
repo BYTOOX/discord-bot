@@ -1,4 +1,4 @@
-import { MessageFlags, SlashCommandBuilder } from "discord.js";
+﻿import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { SlashCommand } from "../core/types";
 import { sendReply } from "../core/interactionReply";
@@ -35,7 +35,7 @@ export const panelCommand: SlashCommand = {
 
         await interaction.deferReply({ ephemeral: true });
 
-        const previous = client.getRegisteredMusicPanel(guildId);
+        const previous = await client.getRegisteredMusicPanel(guildId);
         const panelState = await client.musicService.getPanelState(guildId);
         const panelDisplay = await client.getPanelDisplayOrFallback(guildId, interaction.user.id);
         const panel = buildMusicPanel(
@@ -49,12 +49,9 @@ export const panelCommand: SlashCommand = {
           components: panel.components,
           flags: panel.flags
         });
-        client.registerMusicPanelMessage(guildId, sent.channelId, sent.id);
+        await client.registerMusicPanelMessage(guildId, sent.channelId, sent.id);
 
-        if (
-          previous &&
-          (previous.channelId !== sent.channelId || previous.messageId !== sent.id)
-        ) {
+        if (previous && (previous.channelId !== sent.channelId || previous.messageId !== sent.id)) {
           await disablePanelMessage(client, previous.channelId, previous.messageId, "Panel deplace.");
         }
 
@@ -87,7 +84,7 @@ export const panelCommand: SlashCommand = {
       }
 
       case "unpin": {
-        const current = client.getRegisteredMusicPanel(guildId);
+        const current = await client.getRegisteredMusicPanel(guildId);
         if (!current) {
           await sendReply(interaction, {
             content: "Aucun panneau epingle pour ce serveur.",
@@ -96,7 +93,7 @@ export const panelCommand: SlashCommand = {
           return;
         }
 
-        client.clearRegisteredMusicPanel(guildId);
+        await client.clearRegisteredMusicPanel(guildId);
         await disablePanelMessage(client, current.channelId, current.messageId, "Panel desepingle.");
         await sendReply(interaction, {
           content: "Panel desepingle.",
@@ -131,10 +128,18 @@ async function disablePanelMessage(
     }
 
     const textChannel = channel as {
-      messages: { fetch(id: string): Promise<{ components: unknown[]; embeds: unknown[]; edit(payload: unknown): Promise<unknown> }> };
+      messages: {
+        fetch(id: string): Promise<{
+          components: unknown[];
+          embeds: unknown[];
+          edit(payload: unknown): Promise<unknown>;
+        }>;
+      };
     };
     const message = await textChannel.messages.fetch(messageId);
-    const rows = extractButtonRows(message.components as ReadonlyArray<{ toJSON(): { type: number; components?: unknown[] } }>);
+    const rows = extractButtonRows(
+      message.components as ReadonlyArray<{ toJSON(): { type: number; components?: unknown[] } }>
+    );
     await message.edit({
       components: disablePanelRows(rows),
       flags: MessageFlags.IsComponentsV2,
@@ -155,3 +160,4 @@ function extractButtonRows(
       components: component.components ?? []
     }));
 }
+

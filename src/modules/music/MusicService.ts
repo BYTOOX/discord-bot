@@ -8,13 +8,12 @@ import {
   type Snowflake,
   type VoiceBasedChannel
 } from "discord.js";
-import type { Player, SearchQuery, Track, UnresolvedTrack } from "lavalink-client";
+import type { Player, Track, UnresolvedTrack } from "lavalink-client";
 import type { Logger } from "pino";
 
 import type { CustomPlaylistService } from "../playlists/CustomPlaylistService";
 import type { PlaylistTrackInput } from "../playlists/types";
 import type { ProviderResolver } from "../providers/ProviderResolver";
-import type { ProviderMode } from "../providers/types";
 import {
   PANEL_BUTTONS,
   PANEL_SELECTS,
@@ -22,7 +21,7 @@ import {
   type PanelSelectAction,
   type PanelState
 } from "./MusicPanel";
-import { LavalinkService } from "./LavalinkService";
+import { LavalinkService, type LavalinkLoadResult, type LavalinkRawTrack } from "./LavalinkService";
 import type { GuildSettingsService } from "./GuildSettingsService";
 import { displayTrack, formatDuration, toPlaylistTrackInput } from "./trackHelpers";
 import type {
@@ -32,38 +31,13 @@ import type {
   QueueTrack
 } from "./types";
 
-const MAX_PLAYLIST_RESOLVE_PER_CALL = 150;
+const MAX_PLAYLIST_RESOLVE_PER_CALL = 101;
+const MAX_TRACKS_PER_IMPORT = 101;
 const TRACK_ERROR_GRACE_PERIOD_MS = 90_000;
 const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
-const FALLBACK_GUARD_TTL_MS = 15 * 60 * 1000;
-const YOUTUBE_SEARCH_DEGRADED_TTL_MS = 10 * 60 * 1000;
-const FALLBACK_QUERY_MAX_LENGTH = 140;
 const PANEL_JUMP_TARGET_LIMIT = 20;
 const SESSION_TRACK_HISTORY_LIMIT = 80;
 const VOTE_SKIP_RATIO = 0.6;
-const SEARCH_QUERY_NOISE_WORDS = new Set([
-  "official",
-  "video",
-  "audio",
-  "lyrics",
-  "lyric",
-  "remix",
-  "live",
-  "clip",
-  "topic",
-  "version",
-  "hd",
-  "4k",
-  "8k",
-  "vf",
-  "vost",
-  "vostfr",
-  "trailer",
-  "teaser",
-  "bande",
-  "annonce"
-]);
-type FallbackSource = "scsearch" | "ytsearch" | "ytmsearch";
 
 interface VoteSkipState {
   trackKey: string;
@@ -91,10 +65,7 @@ interface GuildSessionState {
 
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
-  private readonly fallbackGuard = new Set<string>();
-  private readonly fallbackInProgressGuilds = new Set<string>();
   private readonly recentTrackErrors = new Map<string, number>();
-  private readonly youtubeSearchDegradedUntil = new Map<string, number>();
   private readonly voteSkipByGuild = new Map<string, VoteSkipState>();
   private readonly sessionByGuild = new Map<string, GuildSessionState>();
 
@@ -105,7 +76,6 @@ export class MusicService {
     private readonly guildSettings: GuildSettingsService,
     private readonly emptyDestroyTimeoutMs: number,
     private readonly selfDeaf: boolean,
-    private readonly youtubeFallbackSource: FallbackSource,
     private readonly logger: Logger
   ) {
     this.bindAutoplayHandler();
@@ -133,8 +103,7 @@ export class MusicService {
 
   public async enqueue(
     interaction: ChatInputCommandInteraction,
-    input: string,
-    preferredProvider: ProviderMode = "auto"
+    input: string
   ): Promise<EnqueueResult> {
     if (!interaction.guildId) {
       throw new Error("Cette commande ne fonctionne que sur un serveur.");
@@ -147,14 +116,10 @@ export class MusicService {
     const voiceChannel = await this.getRequiredUserVoiceChannel(interaction);
     const settings = await this.guildSettings.get(interaction.guildId);
     const player = await this.getOrCreatePlayer(interaction, voiceChannel, settings.volume);
-    const resolution = this.providers.resolve(input, preferredProvider);
-    const searchQuery = this.getSearchQueryWithYoutubeDegradation(
-      interaction.guildId,
-      resolution.searchQuery as SearchQuery
-    );
+    const resolution = this.providers.resolve(input);
 
     const result = await player.search(
-      searchQuery,
+      resolution.searchQuery,
       this.asRequester(interaction)
     );
 
@@ -162,7 +127,9 @@ export class MusicService {
       throw new Error("Aucune musique trouvee pour cette recherche.");
     }
 
-    const tracksToAdd = result.playlist ? result.tracks : [result.tracks[0]];
+    const tracksToAdd = result.playlist
+      ? result.tracks.slice(0, MAX_TRACKS_PER_IMPORT)
+      : [result.tracks[0]];
     const filteredTracks = this.filterDuplicateTracks(
       player,
       tracksToAdd as (Track | UnresolvedTrack)[]
@@ -438,6 +405,40 @@ export class MusicService {
     };
   }
 
+  public async addQueryToPlaylist(
+    interaction: ChatInputCommandInteraction,
+    playlistName: string,
+    query: string
+  ): Promise<{ addedCount: number; attemptedCount: number; sourceLabel: string }> {
+    if (!interaction.guildId) {
+      throw new Error("Cette commande ne fonctionne que sur un serveur.");
+    }
+
+    if (!this.lavalink.manager.useable) {
+      throw new Error("Aucun noeud Lavalink n'est connecte.");
+    }
+
+    const resolution = this.providers.resolve(query);
+    const loadResult = await this.lavalink.loadTracks(resolution.searchQuery);
+    const loadedTracks = this.extractTracksFromLoadResult(loadResult);
+
+    if (loadedTracks.length === 0) {
+      throw new Error("Aucune piste valide trouvee pour cette URL/recherche.");
+    }
+
+    const cappedTracks = loadedTracks.slice(0, MAX_TRACKS_PER_IMPORT);
+    const inputs: PlaylistTrackInput[] = cappedTracks.map((track) =>
+      this.toPlaylistTrackInputFromRawTrack(track, interaction.user.id)
+    );
+
+    const result = await this.playlistService.addTracks(interaction.guildId, playlistName, inputs);
+    return {
+      addedCount: result.addedCount,
+      attemptedCount: inputs.length,
+      sourceLabel: resolution.provider
+    };
+  }
+
   public async saveSessionHistoryToPlaylist(
     interaction: ChatInputCommandInteraction,
     playlistName: string,
@@ -452,7 +453,7 @@ export class MusicService {
       throw new Error("Aucune session recente a sauvegarder.");
     }
 
-    const clamped = Math.max(1, Math.min(100, maxTracks));
+    const clamped = Math.max(1, Math.min(101, maxTracks));
     const selected = session.recentTracks.slice(-clamped);
     const playlistTracks: PlaylistTrackInput[] = selected.map((track) => {
       const payload: PlaylistTrackInput = {
@@ -803,7 +804,7 @@ export class MusicService {
   private async handleTrackError(
     player: Player,
     track: QueueTrack | undefined,
-    message: string
+    _message: string
   ): Promise<void> {
     this.markRecentTrackError(player.guildId);
 
@@ -811,39 +812,14 @@ export class MusicService {
       return;
     }
 
-    if (
-      this.isYoutubeSource(track.info.sourceName) &&
-      this.isHardYoutubePlaybackFailure(message)
-    ) {
-      this.activateYoutubeSearchDegradedMode(player.guildId);
-    }
-
-    this.fallbackInProgressGuilds.add(player.guildId);
-    let fallbackAdded = false;
-    try {
-      fallbackAdded = await this.tryYoutubeFallback(player, track, message);
-    } finally {
-      this.fallbackInProgressGuilds.delete(player.guildId);
-    }
-
-    if (!fallbackAdded) {
-      this.scheduleForceAdvanceAfterTrackError(player.guildId, track);
-      await this.scheduleDestroyAfterTrackErrorIfIdle(player.guildId);
-    }
+    this.scheduleForceAdvanceAfterTrackError(player.guildId, track);
+    await this.scheduleDestroyAfterTrackErrorIfIdle(player.guildId);
   }
 
   private async handleQueueEnd(player: Player, lastTrack: QueueTrack | undefined): Promise<void> {
     try {
       const settings = await this.guildSettings.get(player.guildId);
       const hadRecentError = this.hasRecentTrackError(player.guildId);
-
-      if (this.fallbackInProgressGuilds.has(player.guildId)) {
-        this.logger.info(
-          { guildId: player.guildId },
-          "Fin de file ignoree: recuperation de secours en cours"
-        );
-        return;
-      }
 
       if (settings.autoplay && lastTrack) {
         const didAutoplay = await this.tryAutoplayFromLastTrack(player, lastTrack);
@@ -877,76 +853,6 @@ export class MusicService {
     }
   }
 
-  private async tryYoutubeFallback(
-    player: Player,
-    track: QueueTrack,
-    message: string
-  ): Promise<boolean> {
-    if (!this.shouldTryYoutubeFallback(track.info.sourceName, message)) {
-      return false;
-    }
-
-    const fallbackKey = `${player.guildId}:${track.info.identifier ?? track.info.title ?? "inconnu"}`;
-    if (this.fallbackGuard.has(fallbackKey)) {
-      return false;
-    }
-
-    this.fallbackGuard.add(fallbackKey);
-    setTimeout(() => this.fallbackGuard.delete(fallbackKey), FALLBACK_GUARD_TTL_MS);
-
-    const queryVariants = this.getFallbackQueryVariants(track);
-    if (queryVariants.length === 0) {
-      return false;
-    }
-
-    const hardYoutubeFailure = this.isHardYoutubePlaybackFailure(message);
-    const fallbackSources = this.getFallbackSources(hardYoutubeFailure);
-
-    for (const source of fallbackSources) {
-      for (const query of queryVariants) {
-        try {
-          const search = await player.search(
-            {
-              query,
-              source
-            },
-            { id: "fallback", username: "FallbackAuto" }
-          );
-          const replacement = this.pickBestFallbackCandidate(
-            search.tracks as Track[],
-            track,
-            hardYoutubeFailure
-          );
-          if (!replacement) {
-            continue;
-          }
-
-          await player.queue.add(replacement as Track, 0);
-          await this.resumeAfterFallbackReplacement(player, track);
-
-          this.logger.warn(
-            {
-              guildId: player.guildId,
-              failedTrack: track.info.title,
-              replacementTrack: replacement.info.title,
-              source,
-              query
-            },
-            "Piste de secours ajoutee apres echec YouTube"
-          );
-          return true;
-        } catch (error) {
-          this.logger.warn(
-            { err: error, guildId: player.guildId, source, query },
-            "Source de secours indisponible"
-          );
-        }
-      }
-    }
-
-    return false;
-  }
-
   private async scheduleDestroyAfterTrackErrorIfIdle(guildId: string): Promise<void> {
     const player = this.lavalink.manager.getPlayer(guildId);
     if (!player) {
@@ -971,9 +877,7 @@ export class MusicService {
       return false;
     }
 
-    const autoplaySources: FallbackSource[] = this.isYoutubeSearchDegradedActive(player.guildId)
-      ? ["scsearch", "ytmsearch", "ytsearch"]
-      : ["ytmsearch", "ytsearch", "scsearch"];
+    const autoplaySources = ["ytsearch"] as const;
     for (const source of autoplaySources) {
       try {
         const search = await player.search(
@@ -1073,258 +977,6 @@ export class MusicService {
     return Date.now() - lastErrorAt <= TRACK_ERROR_GRACE_PERIOD_MS;
   }
 
-  private getSearchQueryWithYoutubeDegradation(
-    guildId: string,
-    searchQuery: SearchQuery
-  ): SearchQuery {
-    const source = this.getSearchSource(searchQuery);
-    if (!this.isYoutubeSearchSource(source)) {
-      return searchQuery;
-    }
-
-    if (!this.isYoutubeSearchDegradedActive(guildId)) {
-      return searchQuery;
-    }
-
-    return this.withSearchSource(searchQuery, "scsearch");
-  }
-
-  private activateYoutubeSearchDegradedMode(guildId: string): void {
-    const now = Date.now();
-    const current = this.youtubeSearchDegradedUntil.get(guildId);
-    const until = now + YOUTUBE_SEARCH_DEGRADED_TTL_MS;
-
-    this.youtubeSearchDegradedUntil.set(guildId, until);
-    if (current && current > now) {
-      return;
-    }
-
-    this.logger.warn(
-      { guildId, durationMs: YOUTUBE_SEARCH_DEGRADED_TTL_MS },
-      "Mode degrade YouTube active: recherches texte routees vers SoundCloud"
-    );
-  }
-
-  private isYoutubeSearchDegradedActive(guildId: string): boolean {
-    const degradedUntil = this.youtubeSearchDegradedUntil.get(guildId);
-    if (!degradedUntil) {
-      return false;
-    }
-
-    if (Date.now() <= degradedUntil) {
-      return true;
-    }
-
-    this.youtubeSearchDegradedUntil.delete(guildId);
-    return false;
-  }
-
-  private getSearchSource(searchQuery: SearchQuery): string | null {
-    if (typeof searchQuery === "string") {
-      return null;
-    }
-
-    const candidate = (searchQuery as { source?: unknown }).source;
-    if (typeof candidate !== "string") {
-      return null;
-    }
-
-    return candidate.toLowerCase();
-  }
-
-  private withSearchSource(searchQuery: SearchQuery, source: FallbackSource): SearchQuery {
-    if (typeof searchQuery === "string") {
-      return { query: searchQuery, source } as SearchQuery;
-    }
-
-    return {
-      ...(searchQuery as Record<string, unknown>),
-      source
-    } as SearchQuery;
-  }
-
-  private isYoutubeSearchSource(source: string | null): source is "ytsearch" | "ytmsearch" {
-    return source === "ytsearch" || source === "ytmsearch";
-  }
-
-  private getFallbackSources(hardYoutubeFailure: boolean): FallbackSource[] {
-    if (hardYoutubeFailure) {
-      return ["scsearch"];
-    }
-
-    return [...new Set<FallbackSource>([this.youtubeFallbackSource, "scsearch", "ytsearch"])];
-  }
-
-  private getFallbackQueryVariants(track: QueueTrack): string[] {
-    const title = track.info.title?.trim() ?? "";
-    const author = track.info.author?.trim() ?? "";
-    const combined = `${title} ${author}`.trim();
-    if (!combined) {
-      return [];
-    }
-
-    const normalizedTitle = this.normalizeSearchText(title);
-    const normalizedAuthor = this.normalizeSearchText(author);
-    const normalizedCombined = `${normalizedTitle} ${normalizedAuthor}`.trim();
-    const compactTitle = this.stripNoiseWords(normalizedTitle);
-    const compactCombined = this.stripNoiseWords(normalizedCombined);
-
-    return [...new Set([combined, normalizedCombined, compactCombined, compactTitle, normalizedTitle])]
-      .map((candidate) => candidate.trim().slice(0, FALLBACK_QUERY_MAX_LENGTH))
-      .filter((candidate) => candidate.length > 2);
-  }
-
-  private normalizeSearchText(value: string): string {
-    return value
-      .normalize("NFKD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  private stripNoiseWords(value: string): string {
-    return value
-      .split(/\s+/)
-      .filter((token) => !SEARCH_QUERY_NOISE_WORDS.has(token.toLowerCase()))
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  private pickBestFallbackCandidate(
-    candidates: Track[],
-    failedTrack: QueueTrack,
-    avoidYoutubeCandidates: boolean
-  ): Track | null {
-    const withoutSelf = candidates.filter(
-      (candidate) => candidate.info.identifier !== failedTrack.info.identifier
-    );
-    const filtered = avoidYoutubeCandidates
-      ? withoutSelf.filter((candidate) => !this.isYoutubeSource(candidate.info.sourceName))
-      : withoutSelf;
-
-    const usable = filtered.length > 0 ? filtered : withoutSelf;
-    if (usable.length === 0) {
-      return null;
-    }
-
-    let bestTrack: Track | null = null;
-    let bestScore = Number.NEGATIVE_INFINITY;
-
-    for (const candidate of usable) {
-      const score = this.scoreFallbackCandidate(candidate, failedTrack);
-      if (score <= bestScore) {
-        continue;
-      }
-
-      bestScore = score;
-      bestTrack = candidate;
-    }
-
-    return bestTrack ?? usable[0] ?? null;
-  }
-
-  private scoreFallbackCandidate(candidate: Track, failedTrack: QueueTrack): number {
-    const failedTitle = this.stripNoiseWords(this.normalizeSearchText(failedTrack.info.title ?? ""));
-    const failedAuthor = this.stripNoiseWords(this.normalizeSearchText(failedTrack.info.author ?? ""));
-    const candidateTitle = this.stripNoiseWords(this.normalizeSearchText(candidate.info.title ?? ""));
-    const candidateAuthor = this.stripNoiseWords(this.normalizeSearchText(candidate.info.author ?? ""));
-
-    const titleScore = this.tokenOverlapRatio(candidateTitle, failedTitle) * 10;
-    const authorScore = this.tokenOverlapRatio(candidateAuthor, failedAuthor) * 6;
-    const durationScore = this.getDurationSimilarityScore(
-      candidate.info.duration,
-      failedTrack.info.duration
-    );
-    const sourceScore = this.isYoutubeSource(candidate.info.sourceName) ? 0 : 2;
-
-    return titleScore + authorScore + durationScore + sourceScore;
-  }
-
-  private tokenOverlapRatio(left: string, right: string): number {
-    if (!left || !right) {
-      return 0;
-    }
-
-    const leftTokens = new Set(left.split(/\s+/));
-    const rightTokens = new Set(right.split(/\s+/));
-    if (leftTokens.size === 0 || rightTokens.size === 0) {
-      return 0;
-    }
-
-    let sharedCount = 0;
-    for (const token of leftTokens) {
-      if (!rightTokens.has(token)) {
-        continue;
-      }
-
-      sharedCount += 1;
-    }
-
-    return sharedCount / Math.max(leftTokens.size, rightTokens.size);
-  }
-
-  private getDurationSimilarityScore(
-    candidateDurationMs: number | undefined,
-    failedDurationMs: number | undefined
-  ): number {
-    if (!candidateDurationMs || !failedDurationMs) {
-      return 0;
-    }
-
-    const delta = Math.abs(candidateDurationMs - failedDurationMs);
-    const ratio = delta / Math.max(candidateDurationMs, failedDurationMs);
-    if (ratio <= 0.05) {
-      return 3;
-    }
-
-    if (ratio <= 0.15) {
-      return 2;
-    }
-
-    if (ratio <= 0.3) {
-      return 1;
-    }
-
-    return 0;
-  }
-
-  private async resumeAfterFallbackReplacement(
-    player: Player,
-    failedTrack: QueueTrack
-  ): Promise<void> {
-    const current = player.queue.current;
-    if (
-      current &&
-      this.isSameTrack(
-        current as QueueTrack,
-        failedTrack.info.identifier ?? null,
-        failedTrack.info.title ?? null,
-        failedTrack.info.author ?? null
-      )
-    ) {
-      await player.skip();
-      return;
-    }
-
-    if (!player.playing && !player.paused) {
-      await player.play();
-    }
-  }
-
-  private isHardYoutubePlaybackFailure(message: string): boolean {
-    const normalizedMessage = message.toLowerCase();
-    return (
-      normalizedMessage.includes("all clients failed") ||
-      normalizedMessage.includes("status code: 403") ||
-      normalizedMessage.includes("expected decoding to halt") ||
-      normalizedMessage.includes("decoding the track") ||
-      normalizedMessage.includes("video player configuration error") ||
-      normalizedMessage.includes("requires login")
-    );
-  }
-
   private isYoutubeSource(sourceName: string | undefined): boolean {
     return sourceName?.toLowerCase().includes("youtube") ?? false;
   }
@@ -1378,9 +1030,8 @@ export class MusicService {
     const queueSize = player.queue.tracks.length;
     const { knownDurationMs, hasUnknownDuration } = this.collectRemainingDuration(player);
     const recentError = this.hasRecentTrackError(guildId);
-    const degradedYoutube = this.isYoutubeSearchDegradedActive(guildId);
 
-    const healthLabel = recentError ? "Fragile" : degradedYoutube ? "Surveillance" : "Stable";
+    const healthLabel = recentError ? "Fragile" : "Stable";
     const remaining =
       knownDurationMs > 0
         ? formatDuration(knownDurationMs)
@@ -1393,8 +1044,7 @@ export class MusicService {
       `Etat: ${healthLabel}`,
       `Pistes en attente: ${queueSize}`,
       `Temps restant: ${remainingLabel}`,
-      `Erreurs recentes: ${recentError ? "oui" : "non"}`,
-      `Recherche YouTube degradee: ${degradedYoutube ? "oui" : "non"}`
+      `Erreurs recentes: ${recentError ? "oui" : "non"}`
     ].join("\n");
   }
 
@@ -1668,6 +1318,61 @@ export class MusicService {
     return created;
   }
 
+  private extractTracksFromLoadResult(loadResult: LavalinkLoadResult): LavalinkRawTrack[] {
+    switch (loadResult.loadType) {
+      case "track":
+        return loadResult.data ? [loadResult.data] : [];
+      case "search":
+        return loadResult.data ?? [];
+      case "playlist":
+        return loadResult.data.tracks ?? [];
+      case "error": {
+        const message = loadResult.data.message ?? "Erreur Lavalink inconnue.";
+        throw new Error(`Echec de chargement des pistes: ${message}`);
+      }
+      case "empty":
+      default:
+        return [];
+    }
+  }
+
+  private toPlaylistTrackInputFromRawTrack(track: LavalinkRawTrack, addedBy: string): PlaylistTrackInput {
+    const title = track.info.title?.trim() || "Titre inconnu";
+    const author = track.info.author?.trim() || "Auteur inconnu";
+    const query = this.resolveTrackQuery(track);
+
+    const payload: PlaylistTrackInput = {
+      query,
+      title: `${title} - ${author}`.trim(),
+      addedBy
+    };
+
+    const uri = track.info.uri?.trim();
+    if (uri) {
+      payload.url = uri;
+    }
+
+    return payload;
+  }
+
+  private resolveTrackQuery(track: LavalinkRawTrack): string {
+    const uri = track.info.uri?.trim();
+    if (uri) {
+      return uri;
+    }
+
+    const identifier = track.info.identifier?.trim();
+    const sourceName = track.info.sourceName?.toLowerCase() ?? "";
+    if (identifier && sourceName.includes("youtube")) {
+      return `https://www.youtube.com/watch?v=${identifier}`;
+    }
+
+    const title = track.info.title?.trim() ?? "";
+    const author = track.info.author?.trim() ?? "";
+    const fallback = `${title} ${author}`.trim();
+    return fallback || identifier || "inconnu";
+  }
+
   private collectTrackKeysForPlayer(player: Player): Set<string> {
     const keys = new Set<string>();
     if (player.queue.current) {
@@ -1719,13 +1424,9 @@ export class MusicService {
     const source = sourceName.toLowerCase();
     const palette: Record<string, number> = {
       youtube: 0xff2d55,
-      youtubemusic: 0xff4f7a,
-      "youtube music": 0xff4f7a,
-      soundcloud: 0xff7a18,
-      spotify: 0x1ed760,
-      deezer: 0x00b8ff,
-      apple_music: 0xfa2d48,
-      applemusic: 0xfa2d48
+      youtubemusic: 0xff2d55,
+      "youtube music": 0xff2d55,
+      spotify: 0x1ed760
     };
 
     const base = palette[source] ?? 0x2b90ff;
@@ -2047,17 +1748,6 @@ export class MusicService {
 
     clearTimeout(timer);
     this.pendingDestroyTimers.delete(guildId);
-  }
-
-  private shouldTryYoutubeFallback(sourceName: string | undefined, message: string): boolean {
-    if (!this.isYoutubeSource(sourceName)) {
-      return false;
-    }
-
-    return (
-      this.isHardYoutubePlaybackFailure(message) ||
-      message.toLowerCase().includes("must find sig function")
-    );
   }
 
   private nextRepeatMode(currentMode: "off" | "track" | "queue"): "off" | "track" | "queue" {
