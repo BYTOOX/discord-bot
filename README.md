@@ -16,11 +16,13 @@ Quantum Jukebox vise un équilibre clair:
 - **Fiabilité production**: état partagé, verrous distribués, exécution multi-réplicas.
 - **Simplicité d'exploitation**: stack Docker Compose unique.
 - **Cohérence produit**: YouTube + Spotify uniquement, messages en français.
+- **Orchestration multi-bots**: 1 orchestrateur + pool de jukebox vocaux.
 
 ## Caractéristiques clés
 
 | Axe | Décision produit |
 | --- | --- |
+| Runtime bots | **1 orchestrateur + N jukebox** (N>=3 recommandé) |
 | Sources audio | **YouTube** et **Spotify** uniquement |
 | Priorité recherche texte | YouTube |
 | Liens directs | Spotify accepté, YouTube accepté |
@@ -68,10 +70,15 @@ docker compose down
 
 ```mermaid
 flowchart LR
-    D[Discord Gateway/API] --> B[Quantum Jukebox\nN replicas]
-    B --> R[(Redis\nlocks distribués)]
-    B --> P[(PostgreSQL\nsettings + playlists + panels)]
-    B --> L[Lavalink v4\nyoutube-plugin + lavasrc]
+    D[Discord Gateway/API] --> O[Orchestrateur\nslash commands]
+    O --> J1[Jukebox #1]
+    O --> J2[Jukebox #2]
+    O --> J3[Jukebox #3]
+    O --> R[(Redis\nlocks distribués)]
+    O --> P[(PostgreSQL\nsettings + playlists)]
+    J1 --> L[Lavalink v4\nyoutube-plugin + lavasrc]
+    J2 --> L
+    J3 --> L
     L --> C[yt-cipher]
 ```
 
@@ -88,6 +95,8 @@ flowchart LR
 | `DISCORD_TOKEN` | Oui | - | Token du bot Discord |
 | `DISCORD_CLIENT_ID` | Oui | - | ID application Discord |
 | `DISCORD_GUILD_ID` | Oui | - | ID du serveur Discord cible |
+| `JUKEBOX_TOKENS` | Non | vide | CSV de tokens jukebox (active le mode orchestrateur si non vide) |
+| `JUKEBOX_FIXED_NAMES` | Non | vide | CSV de noms/pseudos forcés pour les jukebox |
 | `POSTGRES_URL` | Non | `postgresql://quantum:quantum@localhost:5432/quantum_jukebox` | Connexion PostgreSQL |
 | `REDIS_URL` | Non | `redis://localhost:6379` | Connexion Redis |
 | `LAVALINK_HOST` | Non | `localhost` | Hôte Lavalink |
@@ -121,6 +130,9 @@ flowchart LR
 
 ### Panel
 
+En mode orchestrateur multi-jukebox, le panel est desactive.
+Ces commandes restent disponibles uniquement en mode bot unique.
+
 - `/panel pin`
 - `/panel refresh`
 - `/panel unpin`
@@ -143,14 +155,33 @@ flowchart LR
 - Spotify: accepté via **liens directs** (métadonnées résolues par Lavalink/LavaSrc).
 - Import playlist: max `101` pistes par opération.
 - Sources non supportées: erreur explicite, en français.
+- Routing vocal: **1 jukebox max par salon vocal** et **1 salon max par jukebox**.
+- Binding: un jukebox reste attaché au salon jusqu'à déconnexion.
+- Allocation: **premier jukebox libre**.
 
 ## Exploitation
 
-### Monter à plusieurs réplicas
+### Monter à plusieurs réplicas (mode bot unique)
 
 ```bash
 docker compose up -d --scale bot=3
 ```
+
+### Mode orchestrateur + 3 jukebox
+
+1. Créer/inviter 4 applications Discord (1 orchestrateur + 3 jukebox) sur le même serveur.
+2. Renseigner:
+   - `DISCORD_TOKEN` / `DISCORD_CLIENT_ID` pour l'orchestrateur
+   - `JUKEBOX_TOKENS=token_1,token_2,token_3`
+3. Lancer normalement:
+
+```bash
+docker compose up -d --build
+```
+
+Important:
+- les jukebox doivent etre presents sur le serveur (`guildCount > 0` dans les logs),
+- les commandes slash restent publiees uniquement par l'orchestrateur.
 
 ### Logs live
 
