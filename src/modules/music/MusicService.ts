@@ -1578,6 +1578,7 @@ export class MusicService {
     }
 
     await this.assertBotVoicePermissions(interaction, voiceChannel);
+    await this.assertBotNotInAnotherVoiceChannel(interaction, voiceChannel.id);
 
     const existingPlayer = this.lavalink.manager.getPlayer(interaction.guildId);
     if (existingPlayer) {
@@ -1603,6 +1604,25 @@ export class MusicService {
     await player.connect();
     await this.assertBotNotServerMuted(interaction);
     return player;
+  }
+
+  private async assertBotNotInAnotherVoiceChannel(
+    interaction: ChatInputCommandInteraction,
+    requestedVoiceChannelId: string
+  ): Promise<void> {
+    if (!interaction.guild) {
+      return;
+    }
+
+    const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
+    const currentBotVoiceChannelId = me.voice.channelId;
+    if (!currentBotVoiceChannelId || currentBotVoiceChannelId === requestedVoiceChannelId) {
+      return;
+    }
+
+    throw new Error(
+      `Le bot est deja actif dans un autre salon vocal (<#${currentBotVoiceChannelId}>).`
+    );
   }
 
   private async getRequiredUserVoiceChannel(
