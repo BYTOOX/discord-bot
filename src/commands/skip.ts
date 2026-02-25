@@ -3,7 +3,7 @@ import { SlashCommandBuilder } from "discord.js";
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
 import { displayTrack } from "../modules/music/trackHelpers";
-import { ensureDjPermission } from "./utils";
+import { ensureDjPermission, getAssignedJukeboxTag } from "./utils";
 
 export const skipCommand: SlashCommand = {
   data: new SlashCommandBuilder().setName("skip").setDescription("Passe a la piste suivante."),
@@ -13,18 +13,19 @@ export const skipCommand: SlashCommand = {
     }
 
     const nextTrack = await client.musicService.skip(interaction);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
     const guildId = interaction.guildId;
     if (!nextTrack) {
       if (guildId) {
         await client.refreshRegisteredMusicPanel(guildId, "Piste passee. La file est maintenant vide.");
       }
-      await sendReply(interaction, "Piste passee. La file est maintenant vide.");
+      await sendReply(interaction, `Piste passee${jukeboxTag}. La file est maintenant vide.`);
       return;
     }
 
     if (guildId) {
       await client.refreshRegisteredMusicPanel(guildId, `Piste passee. En cours: ${displayTrack(nextTrack)}.`);
     }
-    await sendReply(interaction, `Piste passee. En cours: ${displayTrack(nextTrack)}`);
+    await sendReply(interaction, `Piste passee${jukeboxTag}. En cours: ${displayTrack(nextTrack)}`);
   }
 };

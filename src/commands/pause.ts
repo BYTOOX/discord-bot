@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { ensureDjPermission } from "./utils";
+import { ensureDjPermission, getAssignedJukeboxTag } from "./utils";
 
 export const pauseCommand: SlashCommand = {
   data: new SlashCommandBuilder().setName("pause").setDescription("Met la lecture en pause."),
@@ -12,9 +12,10 @@ export const pauseCommand: SlashCommand = {
     }
 
     await client.musicService.pause(interaction);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
     if (interaction.guildId) {
       await client.refreshRegisteredMusicPanel(interaction.guildId, "Lecture en pause.");
     }
-    await sendReply(interaction, "Lecture en pause.");
+    await sendReply(interaction, `Lecture en pause${jukeboxTag}.`);
   }
 };

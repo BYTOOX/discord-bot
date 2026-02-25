@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { ensureDjPermission } from "./utils";
+import { ensureDjPermission, getAssignedJukeboxTag } from "./utils";
 
 export const stopCommand: SlashCommand = {
   data: new SlashCommandBuilder()
@@ -14,9 +14,10 @@ export const stopCommand: SlashCommand = {
     }
 
     await client.musicService.stop(interaction);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
     if (interaction.guildId) {
       await client.refreshRegisteredMusicPanel(interaction.guildId, "Lecture arretee et file videe.");
     }
-    await sendReply(interaction, "Lecture arretee et file videe.");
+    await sendReply(interaction, `Lecture arretee et file videe${jukeboxTag}.`);
   }
 };

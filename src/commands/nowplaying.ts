@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { mustGetGuildId } from "./utils";
+import { getAssignedJukeboxTag, mustGetGuildId } from "./utils";
 
 export const nowPlayingCommand: SlashCommand = {
   data: new SlashCommandBuilder()
@@ -10,7 +10,20 @@ export const nowPlayingCommand: SlashCommand = {
     .setDescription("Affiche la musique en cours."),
   async execute(interaction, client) {
     const guildId = mustGetGuildId(interaction);
-    const nowPlaying = client.musicService.getNowPlaying(guildId);
-    await sendReply(interaction, nowPlaying ? `En cours: ${nowPlaying}` : "Aucune lecture en cours.");
+    const musicService = client.musicService as unknown as {
+      getNowPlayingForInteraction?: (value: typeof interaction) => Promise<string | null>;
+      getNowPlaying: (value: string) => string | null;
+    };
+    const nowPlaying =
+      typeof musicService.getNowPlayingForInteraction === "function"
+        ? await musicService.getNowPlayingForInteraction(interaction)
+        : musicService.getNowPlaying(guildId);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
+    await sendReply(
+      interaction,
+      nowPlaying
+        ? `En cours${jukeboxTag}: ${nowPlaying}`
+        : `Aucune lecture en cours${jukeboxTag}.`
+    );
   }
 };

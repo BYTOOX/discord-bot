@@ -26,3 +26,18 @@ export function mustGetGuildId(interaction: ChatInputCommandInteraction): string
   return interaction.guildId;
 }
 
+export async function getAssignedJukeboxTag(
+  interaction: ChatInputCommandInteraction,
+  client: QuantumClient
+): Promise<string> {
+  const musicService = client.musicService as unknown as {
+    describeAssignedJukebox?: (value: ChatInputCommandInteraction) => Promise<string | null>;
+  };
+  if (typeof musicService.describeAssignedJukebox !== "function") {
+    return "";
+  }
+
+  const callsign = await musicService.describeAssignedJukebox(interaction);
+  return callsign ? ` [${callsign}]` : "";
+}
+

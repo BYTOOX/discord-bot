@@ -2,13 +2,24 @@ import { SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { mustGetGuildId } from "./utils";
+import { getAssignedJukeboxTag, mustGetGuildId } from "./utils";
 
 export const queueCommand: SlashCommand = {
   data: new SlashCommandBuilder().setName("queue").setDescription("Affiche la file actuelle."),
   async execute(interaction, client) {
     const guildId = mustGetGuildId(interaction);
-    const queue = client.musicService.getQueueSummary(guildId);
+    const musicService = client.musicService as unknown as {
+      getQueueSummaryForInteraction?: (
+        value: typeof interaction,
+        previewCount?: number
+      ) => Promise<{ current: string | null; upcoming: string[] }>;
+      getQueueSummary: (value: string, previewCount?: number) => { current: string | null; upcoming: string[] };
+    };
+    const queue =
+      typeof musicService.getQueueSummaryForInteraction === "function"
+        ? await musicService.getQueueSummaryForInteraction(interaction)
+        : musicService.getQueueSummary(guildId);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
 
     if (!queue.current && queue.upcoming.length === 0) {
       await sendReply(interaction, "La file est vide.");
@@ -27,6 +38,7 @@ export const queueCommand: SlashCommand = {
       parts.push(...queue.upcoming);
     }
 
-    await sendReply(interaction, parts.join("\n"));
+    const header = jukeboxTag.length > 0 ? `Jukebox actif${jukeboxTag}\n` : "";
+    await sendReply(interaction, `${header}${parts.join("\n")}`);
   }
 };

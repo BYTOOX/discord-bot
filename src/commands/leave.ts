@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { ensureDjPermission } from "./utils";
+import { ensureDjPermission, getAssignedJukeboxTag } from "./utils";
 
 export const leaveCommand: SlashCommand = {
   data: new SlashCommandBuilder()
@@ -14,6 +14,7 @@ export const leaveCommand: SlashCommand = {
     }
 
     await client.musicService.leave(interaction);
-    await sendReply(interaction, "Bot deconnecte du salon vocal.");
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
+    await sendReply(interaction, `Bot deconnecte du salon vocal${jukeboxTag}.`);
   }
 };

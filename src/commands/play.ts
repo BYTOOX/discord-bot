@@ -4,6 +4,7 @@ import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
 import { buildMusicPanel } from "../modules/music/MusicPanel";
 import type { EnqueueResult } from "../modules/music/types";
+import { getAssignedJukeboxTag } from "./utils";
 
 export const playCommand: SlashCommand = {
   data: new SlashCommandBuilder()
@@ -17,6 +18,7 @@ export const playCommand: SlashCommand = {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const result = await client.musicService.enqueue(interaction, query);
+    const jukeboxTag = await getAssignedJukeboxTag(interaction, client);
 
     if (!interaction.guildId) {
       throw new Error("Cette commande ne fonctionne que sur un serveur.");
@@ -25,7 +27,7 @@ export const playCommand: SlashCommand = {
     const status = buildEnqueueStatus(result, query);
     const refreshed = await client.refreshRegisteredMusicPanel(interaction.guildId, status);
     if (refreshed) {
-      await sendReply(interaction, `Ajoute a la file: ${formatAddedCount(result)}.`);
+      await sendReply(interaction, `Ajoute a la file${jukeboxTag}: ${formatAddedCount(result)}.`);
       return;
     }
 
@@ -46,7 +48,7 @@ export const playCommand: SlashCommand = {
 
     await client.registerMusicPanelMessage(interaction.guildId, sent.channelId, sent.id);
     await client.refreshRegisteredMusicPanel(interaction.guildId, status);
-    await sendReply(interaction, `Ajoute a la file: ${formatAddedCount(result)}.`);
+    await sendReply(interaction, `Ajoute a la file${jukeboxTag}: ${formatAddedCount(result)}.`);
   }
 };
 
