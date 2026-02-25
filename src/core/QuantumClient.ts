@@ -39,6 +39,14 @@ const INTERACTION_LOCK_TTL_MS = 20_000;
 const PANEL_BUSY_LOCK_TTL_MS = 8_000;
 const COMMAND_PUBLISH_LOCK_TTL_MS = 90_000;
 
+export interface QuantumClientRuntimeOptions {
+  role?: "default" | "orchestrator" | "jukebox";
+  enableInteractions?: boolean;
+  enableCommandPublishing?: boolean;
+  enablePlaybackRuntime?: boolean;
+  enablePanelSystem?: boolean;
+}
+
 export class QuantumClient extends Client {
   public readonly config: AppConfig;
   public readonly logger: Logger;
@@ -53,14 +61,24 @@ export class QuantumClient extends Client {
   public readonly panelRegistryService: PanelRegistryService;
   public readonly lavalinkService: LavalinkService;
   public readonly musicService: MusicService;
+  public readonly runtimeOptions: Required<QuantumClientRuntimeOptions>;
   private eventHandlersBound = false;
+  private commandExecutionClient: QuantumClient = this;
   private readonly activeMusicPanels = new Map<string, { channelId: string; messageId: string }>();
   private panelLiveTicker: NodeJS.Timeout | null = null;
 
-  public constructor(config: AppConfig, logger: Logger) {
+  public constructor(config: AppConfig, logger: Logger, options: QuantumClientRuntimeOptions = {}) {
     super({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
     });
+
+    this.runtimeOptions = {
+      role: options.role ?? "default",
+      enableInteractions: options.enableInteractions ?? true,
+      enableCommandPublishing: options.enableCommandPublishing ?? true,
+      enablePlaybackRuntime: options.enablePlaybackRuntime ?? true,
+      enablePanelSystem: options.enablePanelSystem ?? true
+    };
 
     this.config = config;
     this.logger = logger;
@@ -100,6 +118,10 @@ export class QuantumClient extends Client {
       config.playerSelfDeaf,
       logger.child({ scope: "music" })
     );
+  }
+
+  public setCommandExecutionClient(client: QuantumClient): void {
+    this.commandExecutionClient = client;
   }
 
   public registerCommands(commands: SlashCommand[]): void {
@@ -215,11 +237,21 @@ export class QuantumClient extends Client {
 
     this.once(Events.ClientReady, async (readyClient) => {
       this.logger.info(
-        { username: readyClient.user.tag, guildCount: readyClient.guilds.cache.size },
+        {
+          username: readyClient.user.tag,
+          guildCount: readyClient.guilds.cache.size,
+          role: this.runtimeOptions.role
+        },
         "Client Discord pret"
       );
 
-      await this.musicService.initialize(readyClient.user.id, readyClient.user.username);
+      if (this.runtimeOptions.enablePlaybackRuntime) {
+        await this.musicService.initialize(readyClient.user.id, readyClient.user.username);
+      }
+
+      if (!this.runtimeOptions.enableCommandPublishing) {
+        return;
+      }
 
       const publishLockKey = `commands:publish:${this.config.discordGuildId}`;
       const publishToken = await this.redisLockService.acquire(
@@ -239,13 +271,17 @@ export class QuantumClient extends Client {
       }
     });
 
-    this.on(Events.Raw, (payload) => {
-      void this.musicService.forwardRawEvent(payload);
-    });
+    if (this.runtimeOptions.enablePlaybackRuntime) {
+      this.on(Events.Raw, (payload) => {
+        void this.musicService.forwardRawEvent(payload);
+      });
+    }
 
-    this.on(Events.InteractionCreate, (interaction: Interaction) => {
-      void this.handleInteraction(interaction);
-    });
+    if (this.runtimeOptions.enableInteractions) {
+      this.on(Events.InteractionCreate, (interaction: Interaction) => {
+        void this.handleInteraction(interaction);
+      });
+    }
 
     this.on(Events.Warn, (warning) => {
       this.logger.warn({ warning }, "Avertissement client Discord");
@@ -255,19 +291,21 @@ export class QuantumClient extends Client {
       this.logger.error({ err: error }, "Erreur client Discord");
     });
 
-    this.lavalinkService.manager.on("trackStart", (player) => {
-      void this.refreshRegisteredMusicPanel(player.guildId, "Lecture mise a jour.");
-    });
+    if (this.runtimeOptions.enablePanelSystem) {
+      this.lavalinkService.manager.on("trackStart", (player) => {
+        void this.refreshRegisteredMusicPanel(player.guildId, "Lecture mise a jour.");
+      });
 
-    this.lavalinkService.manager.on("queueEnd", (player) => {
-      void this.refreshRegisteredMusicPanel(player.guildId, "File terminee.");
-    });
+      this.lavalinkService.manager.on("queueEnd", (player) => {
+        void this.refreshRegisteredMusicPanel(player.guildId, "File terminee.");
+      });
 
-    this.lavalinkService.manager.on("playerDestroy", (player) => {
-      void this.refreshRegisteredMusicPanel(player.guildId, "Player deconnecte.");
-    });
+      this.lavalinkService.manager.on("playerDestroy", (player) => {
+        void this.refreshRegisteredMusicPanel(player.guildId, "Player deconnecte.");
+      });
 
-    this.startPanelLiveTicker();
+      this.startPanelLiveTicker();
+    }
     this.eventHandlersBound = true;
   }
 
@@ -280,11 +318,17 @@ export class QuantumClient extends Client {
 
     try {
       if (interaction.isButton()) {
+        if (!this.runtimeOptions.enablePanelSystem) {
+          return;
+        }
         await this.handleButtonInteraction(interaction);
         return;
       }
 
       if (interaction.isStringSelectMenu()) {
+        if (!this.runtimeOptions.enablePanelSystem) {
+          return;
+        }
         await this.handleSelectInteraction(interaction);
         return;
       }
@@ -303,7 +347,7 @@ export class QuantumClient extends Client {
       }
 
       try {
-        await command.execute(interaction, this);
+        await command.execute(interaction, this.commandExecutionClient);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Erreur de commande inattendue.";
         this.logger.error(

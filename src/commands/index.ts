@@ -32,3 +32,7 @@ export const commands: SlashCommand[] = [
   filterCommand,
   playlistCommand
 ];
+
+export const orchestratorCommands: SlashCommand[] = commands.filter(
+  (command) => command.data.name !== "panel"
+);

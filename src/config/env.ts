@@ -7,6 +7,8 @@ const envSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_GUILD_ID: z.string().min(1),
+  JUKEBOX_TOKENS: z.string().default(""),
+  JUKEBOX_FIXED_NAMES: z.string().default(""),
   POSTGRES_URL: z
     .string()
     .url()
@@ -50,6 +52,8 @@ export interface AppConfig {
   discordToken: string;
   discordClientId: string;
   discordGuildId: string;
+  jukeboxTokens: string[];
+  jukeboxFixedNames: string[];
   postgresUrl: string;
   redisUrl: string;
   lavalinkHost: string;
@@ -75,10 +79,26 @@ export function loadConfig(): AppConfig {
     .map((roleId) => roleId.trim())
     .filter((roleId) => roleId.length > 0);
 
+  const jukeboxTokens = parsed.JUKEBOX_TOKENS.split(",")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+
+  if (jukeboxTokens.length > 0 && jukeboxTokens.length < 3) {
+    throw new Error(
+      "Configuration invalide: JUKEBOX_TOKENS doit contenir au moins 3 tokens ou rester vide."
+    );
+  }
+
+  const jukeboxFixedNames = parsed.JUKEBOX_FIXED_NAMES.split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+
   return {
     discordToken: parsed.DISCORD_TOKEN,
     discordClientId: parsed.DISCORD_CLIENT_ID,
     discordGuildId: parsed.DISCORD_GUILD_ID,
+    jukeboxTokens,
+    jukeboxFixedNames,
     postgresUrl: parsed.POSTGRES_URL,
     redisUrl: parsed.REDIS_URL,
     lavalinkHost: parsed.LAVALINK_HOST,
