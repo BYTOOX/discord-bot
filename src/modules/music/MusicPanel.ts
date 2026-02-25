@@ -184,7 +184,6 @@ export function buildPanelComponents(
   disabled = false
 ): ActionRowBuilder<ButtonBuilder>[] {
   const pauseLabel = state.paused ? "Reprendre" : "Pause";
-  const pauseEmoji = state.paused ? "??" : "??";
   const loopLabel =
     state.repeatMode === "off"
       ? "Loop:Off"
@@ -197,31 +196,26 @@ export function buildPanelComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeDown)
       .setLabel("Vol-")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.previous)
       .setLabel("Retour")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.pauseToggle)
       .setLabel(pauseLabel)
-      .setEmoji(pauseEmoji)
       .setStyle(ButtonStyle.Primary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.skip)
       .setLabel("Skip")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Primary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeUp)
       .setLabel("Vol+")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -234,31 +228,26 @@ export function buildPanelComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.shuffle)
       .setLabel("Shuffle")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.loop)
       .setLabel(loopLabel)
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.stop)
       .setLabel("Stop")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Danger)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.autoplay)
       .setLabel(autoplayLabel)
-      .setEmoji("??")
       .setStyle(state.autoplay ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.voteSkip)
       .setLabel("Vote")
-      .setEmoji("???")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -267,7 +256,6 @@ export function buildPanelComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.playlist)
       .setLabel("Apercu file")
-      .setEmoji("??")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );

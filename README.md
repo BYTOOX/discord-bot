@@ -93,6 +93,9 @@ flowchart LR
 | `LAVALINK_HOST` | Non | `localhost` | Hôte Lavalink |
 | `LAVALINK_PORT` | Non | `2333` | Port Lavalink |
 | `LAVALINK_PASSWORD` | Non | `youshallnotpass` | Mot de passe Lavalink |
+| `YOUTUBE_OAUTH_ENABLED` | Non | `false` | Active OAuth youtube-plugin (recommandé en production) |
+| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Non | vide | Refresh token OAuth YouTube (optionnel au premier démarrage) |
+| `YOUTUBE_OAUTH_SKIP_INITIALIZATION` | Non | `false` | Skip de l'init OAuth auto au boot Lavalink |
 | `MAX_TRACKS_PER_PLAYLIST` | Non | `101` | Plafonné automatiquement à `101` |
 | `DJ_ROLE_IDS` | Non | vide | IDs de rôles DJ autorisés (CSV) |
 
@@ -184,6 +187,15 @@ Causes typiques:
 ### Erreur PostgreSQL/Redis au tout premier boot
 
 Le bot peut démarrer avant les dépendances. Avec `restart: unless-stopped`, il repart automatiquement dès que Postgres/Redis répondent.
+
+### Lecture YouTube annoncée mais sans son
+
+Si Lavalink remonte `Sign in to confirm you're not a bot` ou des erreurs de codec non audio:
+
+- activer `YOUTUBE_OAUTH_ENABLED=true`
+- injecter ensuite `YOUTUBE_OAUTH_REFRESH_TOKEN` (persistant)
+- redémarrer la stack (`docker compose down && docker compose up -d --build`)
+- valider avec la lecture Discord standard (`/play`), pas via un endpoint REST `youtube/stream`
 
 ## Arborescence utile
 

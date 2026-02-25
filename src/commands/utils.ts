@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction } from "discord.js";
+import { MessageFlags, type ChatInputCommandInteraction } from "discord.js";
 
 import type { QuantumClient } from "../core/QuantumClient";
 import { sendReply } from "../core/interactionReply";
@@ -14,7 +14,7 @@ export async function ensureDjPermission(
 
   await sendReply(interaction, {
     content: "Il faut un role DJ ou la permission Gerer le serveur pour cette commande.",
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
   return false;
 }
@@ -25,3 +25,4 @@ export function mustGetGuildId(interaction: ChatInputCommandInteraction): string
   }
   return interaction.guildId;
 }
+

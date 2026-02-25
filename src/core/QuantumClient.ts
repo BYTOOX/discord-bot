@@ -1,9 +1,10 @@
-﻿import {
+import {
   AttachmentBuilder,
   Client,
   Collection,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   type ButtonInteraction,
   type Interaction,
   type StringSelectMenuInteraction
@@ -296,7 +297,7 @@ export class QuantumClient extends Client {
       if (!command) {
         await sendReply(interaction, {
           content: "Commande inconnue.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -316,7 +317,7 @@ export class QuantumClient extends Client {
         );
         await sendReply(interaction, {
           content: `Erreur: ${message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     } finally {
@@ -335,7 +336,7 @@ export class QuantumClient extends Client {
       if (!interaction.guild) {
         await interaction.reply({
           content: "Ce bouton ne peut etre utilise que sur un serveur.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -343,7 +344,7 @@ export class QuantumClient extends Client {
       if (!guildId) {
         await interaction.reply({
           content: "Impossible de determiner le serveur pour ce panneau.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -353,7 +354,7 @@ export class QuantumClient extends Client {
       if (!bypassDjCheck && !this.accessPolicy.canManagePlayback(member)) {
         await interaction.reply({
           content: "Il faut un role DJ ou la permission Gerer le serveur.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -365,7 +366,7 @@ export class QuantumClient extends Client {
       if (!busyToken) {
         await interaction.reply({
           content: "Une action est deja en cours sur ce panneau, reessaie dans une seconde.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -387,9 +388,9 @@ export class QuantumClient extends Client {
       );
 
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: `Erreur: ${message}`, ephemeral: true });
+        await interaction.followUp({ content: `Erreur: ${message}`, flags: MessageFlags.Ephemeral });
       } else {
-        await interaction.reply({ content: `Erreur: ${message}`, ephemeral: true });
+        await interaction.reply({ content: `Erreur: ${message}`, flags: MessageFlags.Ephemeral });
       }
     } finally {
       if (busyToken && interaction.guildId) {
@@ -412,7 +413,7 @@ export class QuantumClient extends Client {
       if (!interaction.guild) {
         await interaction.reply({
           content: "Ce menu ne peut etre utilise que sur un serveur.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -421,7 +422,7 @@ export class QuantumClient extends Client {
       if (!guildId) {
         await interaction.reply({
           content: "Impossible de determiner le serveur pour ce panneau.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -430,7 +431,7 @@ export class QuantumClient extends Client {
       if (!this.accessPolicy.canManagePlayback(member)) {
         await interaction.reply({
           content: "Il faut un role DJ ou la permission Gerer le serveur.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -442,7 +443,7 @@ export class QuantumClient extends Client {
       if (!busyToken) {
         await interaction.reply({
           content: "Une action est deja en cours sur ce panneau, reessaie dans une seconde.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -464,9 +465,9 @@ export class QuantumClient extends Client {
       );
 
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: `Erreur: ${message}`, ephemeral: true });
+        await interaction.followUp({ content: `Erreur: ${message}`, flags: MessageFlags.Ephemeral });
       } else {
-        await interaction.reply({ content: `Erreur: ${message}`, ephemeral: true });
+        await interaction.reply({ content: `Erreur: ${message}`, flags: MessageFlags.Ephemeral });
       }
     } finally {
       if (busyToken && interaction.guildId) {
@@ -584,4 +585,5 @@ export class QuantumClient extends Client {
     }
   }
 }
+
 

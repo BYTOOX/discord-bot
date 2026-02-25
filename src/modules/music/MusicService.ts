@@ -627,6 +627,18 @@ export class MusicService {
       }
 
       case PANEL_BUTTONS.skip: {
+        if (!player.queue.current) {
+          throw new Error("Aucune piste en cours.");
+        }
+
+        if (player.queue.tracks.length === 0) {
+          await player.stopPlaying(false, false);
+          return {
+            message: "Piste passee. La file est maintenant vide.",
+            state: await this.getPanelState(guildId)
+          };
+        }
+
         await player.skip();
         const nowPlaying = player.queue.current;
         if (!nowPlaying) {

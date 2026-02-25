@@ -1,4 +1,4 @@
-﻿import { MessageFlags, SlashCommandBuilder } from "discord.js";
+import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { SlashCommand } from "../core/types";
 import { sendReply } from "../core/interactionReply";
@@ -33,7 +33,7 @@ export const panelCommand: SlashCommand = {
           throw new Error("Ce salon ne permet pas d'envoyer un panneau.");
         }
 
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const previous = await client.getRegisteredMusicPanel(guildId);
         const panelState = await client.musicService.getPanelState(guildId);
@@ -58,7 +58,7 @@ export const panelCommand: SlashCommand = {
         await client.refreshRegisteredMusicPanel(guildId, "Panel epingle.");
         await sendReply(interaction, {
           content: `Panel epingle dans <#${sent.channelId}>.`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -71,14 +71,14 @@ export const panelCommand: SlashCommand = {
         if (!refreshed) {
           await sendReply(interaction, {
             content: "Aucun panneau epingle. Utilise `/panel pin`.",
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
           return;
         }
 
         await sendReply(interaction, {
           content: "Panel rafraichi.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -88,7 +88,7 @@ export const panelCommand: SlashCommand = {
         if (!current) {
           await sendReply(interaction, {
             content: "Aucun panneau epingle pour ce serveur.",
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
           return;
         }
@@ -97,7 +97,7 @@ export const panelCommand: SlashCommand = {
         await disablePanelMessage(client, current.channelId, current.messageId, "Panel desepingle.");
         await sendReply(interaction, {
           content: "Panel desepingle.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -160,4 +160,5 @@ function extractButtonRows(
       components: component.components ?? []
     }));
 }
+
 

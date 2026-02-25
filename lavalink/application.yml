@@ -1,4 +1,4 @@
-﻿server:
+server:
   port: 2333
 
 lavalink:
@@ -13,12 +13,13 @@ lavalink:
       http: true
       local: false
     bufferDurationMs: 400
+    trackStuckThresholdMs: 30000
     youtubePlaylistLoadLimit: 101
     playerUpdateInterval: 5
     youtubeSearchEnabled: false
     soundcloudSearchEnabled: false
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.17.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
       repository: "https://maven.lavalink.dev/releases"
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       repository: "https://maven.lavalink.dev/releases"
@@ -31,10 +32,23 @@ plugins:
     allowDirectPlaylistIds: true
     remoteCipher:
       url: "http://yt-cipher:8001/"
+    oauth:
+      enabled: ${YOUTUBE_OAUTH_ENABLED:false}
+      refreshToken: "${YOUTUBE_OAUTH_REFRESH_TOKEN:}"
+      skipInitialization: ${YOUTUBE_OAUTH_SKIP_INITIALIZATION:false}
     clients:
-      - MUSIC
-      - WEB
+      - TV
+      - TVHTML5_SIMPLY
       - MWEB
+      - WEBEMBEDDED
+      - ANDROID_VR
+      - WEB
+      - MUSIC
+    clientOptions:
+      WEB:
+        playback: false
+      MUSIC:
+        playback: false
   lavasrc:
     providers:
       - "ytsearch:\"%ISRC%\""

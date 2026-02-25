@@ -1,4 +1,4 @@
-﻿import { SlashCommandBuilder } from "discord.js";
+import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
@@ -15,7 +15,7 @@ export const playCommand: SlashCommand = {
   async execute(interaction, client) {
     const query = interaction.options.getString("query", true);
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const result = await client.musicService.enqueue(interaction, query);
 
     if (!interaction.guildId) {
@@ -82,4 +82,5 @@ function formatAddedCount(result: EnqueueResult): string {
 
   return `+${result.addedCount} piste ajoutee`;
 }
+
 

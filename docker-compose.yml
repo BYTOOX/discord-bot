@@ -1,4 +1,4 @@
-﻿services:
+services:
   bot:
     build: .
     container_name: quantum-jukebox
@@ -38,7 +38,7 @@
       - redis_data:/data
 
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
+    image: ghcr.io/lavalink-devs/lavalink:4.1.2
     container_name: quantum-lavalink
     restart: unless-stopped
     depends_on:
@@ -51,6 +51,9 @@
       LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      YOUTUBE_OAUTH_ENABLED: ${YOUTUBE_OAUTH_ENABLED:-false}
+      YOUTUBE_OAUTH_REFRESH_TOKEN: ${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
+      YOUTUBE_OAUTH_SKIP_INITIALIZATION: ${YOUTUBE_OAUTH_SKIP_INITIALIZATION:-false}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml
 
