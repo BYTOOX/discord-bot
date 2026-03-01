@@ -105,8 +105,10 @@ flowchart LR
 | `YOUTUBE_OAUTH_ENABLED` | Non | `false` | Active OAuth youtube-plugin (recommandé en production) |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN` | Non | vide | Refresh token OAuth YouTube (optionnel au premier démarrage) |
 | `YOUTUBE_OAUTH_SKIP_INITIALIZATION` | Non | `false` | Skip de l'init OAuth auto au boot Lavalink |
+| `MUSIC_CONTROL_CHANNEL_ID` | Non | vide | Salon texte dédié au Command Center musique |
 | `MAX_TRACKS_PER_PLAYLIST` | Non | `101` | Plafonné automatiquement à `101` |
 | `DJ_ROLE_IDS` | Non | vide | IDs de rôles DJ autorisés (CSV) |
+| `COMMAND_CENTER_ROLE_IDS` | Non | vide | IDs de rôles autorisés à gérer le Command Center |
 
 ## Commandes utilisateur
 
@@ -130,12 +132,12 @@ flowchart LR
 
 ### Panel
 
-En mode orchestrateur multi-jukebox, le panel est desactive.
-Ces commandes restent disponibles uniquement en mode bot unique.
+Le panel legacy est remplace par un `Command Center` global et des panels de session par jukebox.
+Le `Command Center` vit dans le salon configure via `MUSIC_CONTROL_CHANNEL_ID`.
 
-- `/panel pin`
 - `/panel refresh`
-- `/panel unpin`
+- `/panel rebuild`
+- `/panel clean`
 
 ### Playlists custom
 
