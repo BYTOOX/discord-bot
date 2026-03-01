@@ -2,7 +2,6 @@ import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import { sendReply } from "../core/interactionReply";
 import type { SlashCommand } from "../core/types";
-import { buildMusicPanel } from "../modules/music/MusicPanel";
 import type { EnqueueResult } from "../modules/music/types";
 import { getAssignedJukeboxTag } from "./utils";
 
@@ -25,28 +24,6 @@ export const playCommand: SlashCommand = {
     }
 
     const status = buildEnqueueStatus(result, query);
-    const refreshed = await client.refreshRegisteredMusicPanel(interaction.guildId, status);
-    if (refreshed) {
-      await sendReply(interaction, `Ajoute a la file${jukeboxTag}: ${formatAddedCount(result)}.`);
-      return;
-    }
-
-    const panelState = await client.musicService.getPanelState(interaction.guildId);
-    const panelDisplay = await client.getPanelDisplayOrFallback(interaction.guildId, interaction.user.id);
-
-    const panel = buildMusicPanel(panelDisplay, client.config.musicPanelEmoji, panelState, status);
-
-    const targetChannel = interaction.channel;
-    if (!targetChannel?.isTextBased() || !("send" in targetChannel)) {
-      throw new Error("Ce salon ne permet pas d'envoyer le panneau.");
-    }
-
-    const sent = await targetChannel.send({
-      components: panel.components,
-      flags: panel.flags
-    });
-
-    await client.registerMusicPanelMessage(interaction.guildId, sent.channelId, sent.id);
     await client.refreshRegisteredMusicPanel(interaction.guildId, status);
     await sendReply(interaction, `Ajoute a la file${jukeboxTag}: ${formatAddedCount(result)}.`);
   }

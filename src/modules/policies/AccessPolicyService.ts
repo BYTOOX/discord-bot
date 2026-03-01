@@ -19,5 +19,20 @@ export class AccessPolicyService {
 
     return this.config.djRoleIds.some((roleId) => member.roles.cache.has(roleId));
   }
+
+  public canManageCommandCenter(member: GuildMember): boolean {
+    if (
+      member.permissions.has(PermissionFlagsBits.Administrator) ||
+      member.permissions.has(PermissionFlagsBits.ManageGuild)
+    ) {
+      return true;
+    }
+
+    if (this.config.commandCenterRoleIds.length === 0) {
+      return this.canManagePlayback(member);
+    }
+
+    return this.config.commandCenterRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  }
 }
 

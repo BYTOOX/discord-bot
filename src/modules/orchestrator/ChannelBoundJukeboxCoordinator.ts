@@ -4,9 +4,15 @@ import type { Logger } from "pino";
 
 import type { QuantumClient } from "../../core/QuantumClient";
 import type { PanelState } from "../music/MusicPanel";
+import type {
+  ControlSurfaceCoordinator,
+  JukeboxSessionSnapshot,
+  JukeboxSlotSnapshot
+} from "../music/MusicControlSurfaceService";
 import type { MusicPanelDisplay, QueueTrack } from "../music/types";
 import type { EnqueueResult } from "../music/types";
-import { pickRandomJukeboxNames } from "./jukeboxNames";
+import { displayTrack } from "../music/trackHelpers";
+import { pickRandomJukeboxName, pickRandomJukeboxNames } from "./jukeboxNames";
 
 const APOCALYPSE_GIF_URL = "https://media.giphy.com/media/l2JdX3hQjFmS8N3fq/giphy.gif";
 
@@ -33,7 +39,7 @@ interface DelegationContext {
   slotInteraction: ChatInputCommandInteraction;
 }
 
-export class ChannelBoundJukeboxCoordinator {
+export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator {
   private readonly slots: JukeboxSlot[];
   private readonly assignmentsByChannel = new Map<string, ChannelAssignment>();
   private readonly assignmentsBySlot = new Map<string, ChannelAssignment>();
@@ -53,6 +59,7 @@ export class ChannelBoundJukeboxCoordinator {
   }
 
   public initialize(): void {
+    this.bindOrchestratorLifecycle();
     for (const slot of this.slots) {
       this.bindSlotLifecycle(slot);
     }
@@ -216,7 +223,7 @@ export class ChannelBoundJukeboxCoordinator {
     playlistName: string,
     query: string
   ): Promise<{ addedCount: number; attemptedCount: number; sourceLabel: string }> {
-    const slot = this.findFirstOperationalSlot();
+    const slot = this.findFirstOperationalSlot([], interaction.guildId ?? undefined);
     if (!slot) {
       throw new Error(this.buildNoJukeboxAvailableMessage());
     }
@@ -306,6 +313,89 @@ export class ChannelBoundJukeboxCoordinator {
     return assignment.callsign;
   }
 
+  public getSlotSnapshots(guildId: string): JukeboxSlotSnapshot[] {
+    return this.slots.map((slot) => {
+      const assignment = this.assignmentsBySlot.get(slot.id);
+      const player = slot.client.musicService.getPlayer(guildId);
+      const focusTrack = player?.queue.current ?? player?.queue.tracks[0] ?? null;
+      const connectedVoiceChannelId = this.getSlotConnectedVoiceChannelId(slot, guildId);
+
+      if (!this.isSlotOperational(slot)) {
+        return {
+          slotId: slot.id,
+          callsign: slot.callsign,
+          mode: "offline",
+          voiceChannelId: connectedVoiceChannelId,
+          sessionChannelId: connectedVoiceChannelId,
+          currentTrack: focusTrack ? displayTrack(focusTrack) : null,
+          queueDepth: player ? player.queue.tracks.length : 0
+        };
+      }
+
+      if (!assignment || assignment.guildId !== guildId) {
+        return {
+          slotId: slot.id,
+          callsign: slot.callsign,
+          mode: connectedVoiceChannelId ? "assigned" : "available",
+          voiceChannelId: connectedVoiceChannelId,
+          sessionChannelId: connectedVoiceChannelId,
+          currentTrack: focusTrack ? displayTrack(focusTrack) : null,
+          queueDepth: player ? player.queue.tracks.length : 0
+        };
+      }
+
+      return {
+        slotId: slot.id,
+        callsign: assignment.callsign,
+        mode: player?.paused ? "paused" : player?.playing ? "playing" : "assigned",
+        voiceChannelId: assignment.voiceChannelId,
+        sessionChannelId: assignment.textChannelId,
+        currentTrack: focusTrack ? displayTrack(focusTrack) : null,
+        queueDepth: player ? player.queue.tracks.length : 0
+      };
+    });
+  }
+
+  public getSessionSnapshots(guildId: string): JukeboxSessionSnapshot[] {
+    const snapshots: JukeboxSessionSnapshot[] = [];
+
+    for (const assignment of this.assignmentsByChannel.values()) {
+      if (assignment.guildId !== guildId) {
+        continue;
+      }
+
+      const slot = this.findSlot(assignment.slotId);
+      if (!slot) {
+        continue;
+      }
+
+      const player = slot.client.musicService.getPlayer(guildId);
+      const focusTrack = player?.queue.current ?? player?.queue.tracks[0] ?? null;
+      snapshots.push({
+        guildId,
+        slotId: slot.id,
+        callsign: assignment.callsign,
+        mode: player?.paused ? "paused" : player?.playing ? "playing" : focusTrack ? "queued" : "idle",
+        voiceChannelId: assignment.voiceChannelId,
+        sessionChannelId: assignment.textChannelId,
+        trackTitle: focusTrack?.info.title ?? null,
+        trackAuthor: focusTrack?.info.author ?? null,
+        trackUrl: focusTrack?.info.uri ?? null,
+        artworkUrl: focusTrack?.info.artworkUrl ?? null,
+        sourceLabel: focusTrack?.info.sourceName ?? "unknown",
+        durationMs: focusTrack?.info.duration ?? 0,
+        positionMs: player?.queue.current ? Math.max(0, player.position) : 0,
+        queueDepth: player ? player.queue.tracks.length : 0,
+        queuePreview: (player?.queue.tracks ?? [])
+          .slice(0, 3)
+          .map((track) => displayTrack(track)),
+        volume: player?.volume ?? slot.client.config.defaultVolume
+      });
+    }
+
+    return snapshots;
+  }
+
   public getPanelState(_guildId: string): Promise<PanelState> {
     return Promise.resolve({
       paused: false,
@@ -369,7 +459,11 @@ export class ChannelBoundJukeboxCoordinator {
     context: DelegationContext,
     interaction: ChatInputCommandInteraction
   ): Promise<DelegationContext | null> {
-    const replacement = this.findFirstOperationalSlot([context.slot.id]);
+    const replacement = this.findFirstOperationalSlot(
+      [context.slot.id],
+      context.assignment.guildId,
+      context.assignment.voiceChannelId
+    );
     if (!replacement) {
       return null;
     }
@@ -380,7 +474,7 @@ export class ChannelBoundJukeboxCoordinator {
       replacement,
       context.assignment.guildId,
       context.assignment.voiceChannelId,
-      interaction.channelId
+      context.assignment.voiceChannelId
     );
     const slotInteraction = await this.buildSlotInteraction(interaction, replacement);
     return {
@@ -404,13 +498,31 @@ export class ChannelBoundJukeboxCoordinator {
     if (existing) {
       const slot = this.findSlot(existing.slotId);
       if (slot && this.isSlotOperational(slot)) {
-        existing.lastActionAt = Date.now();
-        existing.textChannelId = interaction.channelId;
-        const slotInteraction = await this.buildSlotInteraction(interaction, slot);
-        return { assignment: existing, slot, slotInteraction };
+        const connectedVoiceChannelId = this.getSlotConnectedVoiceChannelId(slot, existing.guildId);
+        if (!connectedVoiceChannelId) {
+          this.releaseByChannelKey(key, "slot deconnecte detecte pendant delegation");
+        } else if (connectedVoiceChannelId !== existing.voiceChannelId) {
+          this.rebindAssignmentVoiceChannel(
+            existing,
+            connectedVoiceChannelId,
+            "resync affectation pendant delegation"
+          );
+        }
+      } else {
+        this.releaseByChannelKey(key, "slot indisponible");
       }
+    }
 
-      this.releaseByChannelKey(key, "slot indisponible");
+    const refreshed = this.assignmentsByChannel.get(key);
+    if (refreshed) {
+      const slot = this.findSlot(refreshed.slotId);
+      if (slot && this.isSlotOperational(slot)) {
+        refreshed.lastActionAt = Date.now();
+        refreshed.textChannelId = refreshed.voiceChannelId;
+        const slotInteraction = await this.buildSlotInteraction(interaction, slot);
+        return { assignment: refreshed, slot, slotInteraction };
+      }
+      this.releaseByChannelKey(key, "slot indisponible apres resync");
     }
 
     if (!createIfMissing) {
@@ -419,12 +531,12 @@ export class ChannelBoundJukeboxCoordinator {
       );
     }
 
-    const slot = this.findFirstOperationalSlot();
+    const slot = this.findFirstOperationalSlot([], voice.guildId, voice.voiceChannelId);
     if (!slot) {
       throw new Error(this.buildNoJukeboxAvailableMessage());
     }
 
-    const assignment = this.assignSlot(slot, voice.guildId, voice.voiceChannelId, interaction.channelId);
+    const assignment = this.assignSlot(slot, voice.guildId, voice.voiceChannelId, voice.voiceChannelId);
     const slotInteraction = await this.buildSlotInteraction(interaction, slot);
     return { assignment, slot, slotInteraction };
   }
@@ -454,6 +566,7 @@ export class ChannelBoundJukeboxCoordinator {
     voiceChannelId: string,
     textChannelId: string
   ): ChannelAssignment {
+    const callsign = this.rotateSlotCallsign(slot);
     const key = this.toChannelKey(guildId, voiceChannelId);
     const assignment: ChannelAssignment = {
       key,
@@ -461,7 +574,7 @@ export class ChannelBoundJukeboxCoordinator {
       voiceChannelId,
       textChannelId,
       slotId: slot.id,
-      callsign: slot.callsign,
+      callsign,
       boundAt: Date.now(),
       lastActionAt: Date.now()
     };
@@ -469,10 +582,24 @@ export class ChannelBoundJukeboxCoordinator {
     this.assignmentsByChannel.set(key, assignment);
     this.assignmentsBySlot.set(slot.id, assignment);
     this.logger.info(
-      { slotId: slot.id, callsign: slot.callsign, guildId, voiceChannelId },
+      { slotId: slot.id, callsign, guildId, voiceChannelId },
       "Jukebox affecte a un salon vocal"
     );
+    void this.applyNickname(slot);
+    void this.orchestrator.refreshRegisteredMusicPanel(guildId, `Routing actif: ${callsign}.`);
     return assignment;
+  }
+
+  private rotateSlotCallsign(slot: JukeboxSlot): string {
+    const activeCallsigns: string[] = [];
+    for (const assignment of this.assignmentsByChannel.values()) {
+      activeCallsigns.push(assignment.callsign);
+    }
+
+    activeCallsigns.push(slot.callsign);
+    const callsign = pickRandomJukeboxName(this.fixedNames, activeCallsigns);
+    slot.callsign = callsign;
+    return callsign;
   }
 
   private releaseByChannelKey(channelKey: string, reason: string): void {
@@ -493,6 +620,7 @@ export class ChannelBoundJukeboxCoordinator {
       },
       "Jukebox libere"
     );
+    void this.orchestrator.refreshRegisteredMusicPanel(assignment.guildId, "Session terminee.");
   }
 
   private releaseBySlot(slotId: string, reason: string): void {
@@ -504,11 +632,56 @@ export class ChannelBoundJukeboxCoordinator {
     this.releaseByChannelKey(assignment.key, reason);
   }
 
+  private rebindAssignmentVoiceChannel(
+    assignment: ChannelAssignment,
+    newVoiceChannelId: string,
+    reason: string
+  ): void {
+    if (assignment.voiceChannelId === newVoiceChannelId) {
+      return;
+    }
+
+    const previousVoiceChannelId = assignment.voiceChannelId;
+    const previousKey = assignment.key;
+    const nextKey = this.toChannelKey(assignment.guildId, newVoiceChannelId);
+
+    const conflict = this.assignmentsByChannel.get(nextKey);
+    if (conflict && conflict.slotId !== assignment.slotId) {
+      this.releaseByChannelKey(nextKey, `${reason}: collision takeover`);
+    }
+
+    this.assignmentsByChannel.delete(previousKey);
+    assignment.voiceChannelId = newVoiceChannelId;
+    assignment.key = nextKey;
+    assignment.textChannelId = newVoiceChannelId;
+    assignment.boundAt = Date.now();
+    assignment.lastActionAt = Date.now();
+    this.assignmentsByChannel.set(nextKey, assignment);
+    this.assignmentsBySlot.set(assignment.slotId, assignment);
+
+    this.logger.info(
+      {
+        slotId: assignment.slotId,
+        callsign: assignment.callsign,
+        guildId: assignment.guildId,
+        fromVoiceChannelId: previousVoiceChannelId,
+        toVoiceChannelId: newVoiceChannelId,
+        reason
+      },
+      "Jukebox reaffecte suite a changement vocal"
+    );
+    void this.orchestrator.refreshRegisteredMusicPanel(assignment.guildId, "Session re-routee.");
+  }
+
   private findSlot(slotId: string): JukeboxSlot | null {
     return this.slots.find((slot) => slot.id === slotId) ?? null;
   }
 
-  private findFirstOperationalSlot(excludedSlotIds: string[] = []): JukeboxSlot | null {
+  private findFirstOperationalSlot(
+    excludedSlotIds: string[] = [],
+    guildId?: string,
+    requestedVoiceChannelId?: string
+  ): JukeboxSlot | null {
     const excluded = new Set(excludedSlotIds);
     for (const slot of this.slots) {
       if (excluded.has(slot.id)) {
@@ -521,6 +694,23 @@ export class ChannelBoundJukeboxCoordinator {
       }
 
       if (!this.isSlotOperational(slot)) {
+        continue;
+      }
+
+      const connectedVoiceChannelId = this.getSlotConnectedVoiceChannelId(slot, guildId);
+      if (connectedVoiceChannelId) {
+        if (requestedVoiceChannelId && connectedVoiceChannelId === requestedVoiceChannelId) {
+          this.logger.info(
+            { slotId: slot.id, callsign: slot.callsign, guildId, connectedVoiceChannelId },
+            "Slot recupere: jukebox deja present dans le salon vocal cible"
+          );
+          return slot;
+        }
+
+        this.logger.warn(
+          { slotId: slot.id, callsign: slot.callsign, guildId, connectedVoiceChannelId },
+          "Slot ignore: jukebox deja connecte a un autre salon vocal"
+        );
         continue;
       }
 
@@ -538,13 +728,30 @@ export class ChannelBoundJukeboxCoordinator {
 
     const guild = slot.client.guilds.cache.get(assignment.guildId);
     const me = guild?.members.me;
-    if (!me?.voice.channelId) {
+    const connectedVoiceChannelId = me?.voice.channelId;
+    if (!connectedVoiceChannelId) {
       this.releaseBySlot(slot.id, "stale assignment cleanup");
+      return;
+    }
+
+    if (connectedVoiceChannelId !== assignment.voiceChannelId) {
+      this.rebindAssignmentVoiceChannel(
+        assignment,
+        connectedVoiceChannelId,
+        "stale assignment move sync"
+      );
     }
   }
 
   private isSlotOperational(slot: JukeboxSlot): boolean {
     return slot.client.isReady() && slot.client.lavalinkService.manager.useable;
+  }
+
+  private getSlotConnectedVoiceChannelId(slot: JukeboxSlot, guildId?: string): string | null {
+    const targetGuildId = guildId ?? slot.client.config.discordGuildId;
+    const guild = slot.client.guilds.cache.get(targetGuildId);
+    const me = guild?.members.me;
+    return me?.voice.channelId ?? null;
   }
 
   private async buildSlotInteraction(
@@ -584,6 +791,8 @@ export class ChannelBoundJukeboxCoordinator {
 
     const message = error.message.toLowerCase();
     return (
+      message.includes("deja actif dans un autre salon vocal") ||
+      message.includes("meme salon vocal que le bot") ||
       message.includes("lavalink") ||
       message.includes("noeud") ||
       message.includes("econn") ||
@@ -612,8 +821,18 @@ export class ChannelBoundJukeboxCoordinator {
 
     const guild = slot.client.guilds.cache.get(assignment.guildId);
     const me = guild?.members.me;
-    if (!me?.voice.channelId) {
+    const connectedVoiceChannelId = me?.voice.channelId;
+    if (!connectedVoiceChannelId) {
       this.releaseByChannelKey(key, "jukebox disconnected from voice");
+      return;
+    }
+
+    if (connectedVoiceChannelId !== assignment.voiceChannelId) {
+      this.rebindAssignmentVoiceChannel(
+        assignment,
+        connectedVoiceChannelId,
+        "post-command move sync"
+      );
     }
   }
 
@@ -627,16 +846,39 @@ export class ChannelBoundJukeboxCoordinator {
       this.releaseBySlot(slot.id, "discord shard disconnect");
     });
 
-    slot.client.on(Events.VoiceStateUpdate, (_oldState, newState) => {
+    slot.client.on(Events.VoiceStateUpdate, (oldState, newState) => {
       if (newState.id !== slot.client.user?.id) {
         return;
       }
 
-      if (newState.channelId) {
+      if (oldState.channelId === newState.channelId) {
         return;
       }
 
-      this.releaseBySlot(slot.id, "voice state disconnect");
+      if (!newState.channelId) {
+        this.releaseBySlot(slot.id, "voice state disconnect");
+        return;
+      }
+
+      const assignment = this.assignmentsBySlot.get(slot.id);
+      if (!assignment) {
+        this.logger.info(
+          {
+            slotId: slot.id,
+            callsign: slot.callsign,
+            guildId: newState.guild.id,
+            movedToVoiceChannelId: newState.channelId
+          },
+          "Jukebox deplace sans affectation active"
+        );
+        return;
+      }
+
+      this.rebindAssignmentVoiceChannel(
+        assignment,
+        newState.channelId,
+        "voice state move"
+      );
     });
 
     slot.client.lavalinkService.manager.on("playerDestroy", (player) => {
@@ -651,27 +893,118 @@ export class ChannelBoundJukeboxCoordinator {
 
       this.releaseBySlot(slot.id, "player destroy");
     });
+
+    slot.client.lavalinkService.manager.on("trackStart", (player) => {
+      void this.orchestrator.refreshRegisteredMusicPanel(
+        player.guildId,
+        `${slot.callsign} en lecture.`
+      );
+    });
+
+    slot.client.lavalinkService.manager.on("queueEnd", (player) => {
+      void this.orchestrator.refreshRegisteredMusicPanel(
+        player.guildId,
+        `${slot.callsign} en attente.`
+      );
+    });
+  }
+
+  private bindOrchestratorLifecycle(): void {
+    this.orchestrator.once(Events.ClientReady, () => {
+      for (const slot of this.slots) {
+        void this.applyNickname(slot);
+      }
+    });
   }
 
   private async applyNickname(slot: JukeboxSlot): Promise<void> {
+    if (!this.orchestrator.isReady()) {
+      return;
+    }
+
     const guild =
-      slot.client.guilds.cache.get(slot.client.config.discordGuildId) ??
-      (await slot.client.guilds.fetch(slot.client.config.discordGuildId).catch(() => null));
+      this.orchestrator.guilds.cache.get(this.orchestrator.config.discordGuildId) ??
+      (await this.orchestrator.guilds.fetch(this.orchestrator.config.discordGuildId).catch(() => null));
     if (!guild) {
       return;
     }
 
-    const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-    if (!me) {
+    const slotUserId = slot.client.user?.id;
+    if (!slotUserId) {
       return;
     }
 
-    await me.setNickname(slot.callsign).catch((error) => {
+    const slotMember = guild.members.cache.get(slotUserId) ?? (await guild.members.fetch(slotUserId).catch(() => null));
+    if (!slotMember) {
+      return;
+    }
+
+    if (slotMember.nickname === slot.callsign) {
+      return;
+    }
+
+    try {
+      await slotMember.setNickname(slot.callsign);
+      return;
+    } catch (error) {
+      if (this.isMissingPermissionsError(error)) {
+        const fallbackApplied = await this.applyNicknameViaSlotSelf(slot);
+        if (fallbackApplied) {
+          this.logger.info(
+            { slotId: slot.id, callsign: slot.callsign },
+            "Pseudo du jukebox defini via fallback self-update"
+          );
+          return;
+        }
+      }
+
       this.logger.warn(
         { err: error, slotId: slot.id, callsign: slot.callsign },
-        "Impossible de definir le pseudo du jukebox"
+        "Impossible de definir le pseudo du jukebox via l'orchestrateur"
       );
-    });
+    }
+  }
+
+  private async applyNicknameViaSlotSelf(slot: JukeboxSlot): Promise<boolean> {
+    if (!slot.client.isReady()) {
+      return false;
+    }
+
+    const guild =
+      slot.client.guilds.cache.get(slot.client.config.discordGuildId) ??
+      (await slot.client.guilds.fetch(slot.client.config.discordGuildId).catch(() => null));
+    if (!guild) {
+      return false;
+    }
+
+    const me = guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+    if (!me) {
+      return false;
+    }
+
+    if (me.nickname === slot.callsign) {
+      return true;
+    }
+
+    try {
+      await me.setNickname(slot.callsign);
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        { err: error, slotId: slot.id, callsign: slot.callsign },
+        "Impossible de definir le pseudo du jukebox via self-update"
+      );
+      return false;
+    }
+  }
+
+  private isMissingPermissionsError(error: unknown): boolean {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    const maybeCode = (error as { code?: unknown }).code;
+    return maybeCode === 50013;
   }
 
   private buildNoJukeboxAvailableMessage(): string {

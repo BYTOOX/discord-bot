@@ -19,6 +19,22 @@ export async function ensureDjPermission(
   return false;
 }
 
+export async function ensureCommandCenterPermission(
+  interaction: ChatInputCommandInteraction,
+  client: QuantumClient
+): Promise<boolean> {
+  const member = await client.musicService.fetchMember(interaction);
+  if (client.accessPolicy.canManageCommandCenter(member)) {
+    return true;
+  }
+
+  await sendReply(interaction, {
+    content: "Il faut le role command center ou la permission Gerer le serveur pour cette commande.",
+    flags: MessageFlags.Ephemeral
+  });
+  return false;
+}
+
 export function mustGetGuildId(interaction: ChatInputCommandInteraction): string {
   if (!interaction.guildId) {
     throw new Error("Cette commande fonctionne uniquement sur un serveur.");

@@ -45,6 +45,7 @@ async function bootstrap(): Promise<void> {
     logger.child({ scope: "coordinator" })
   );
   coordinator.initialize();
+  orchestrator.musicControlSurface.attachCoordinator(coordinator);
 
   const commandClient = new OrchestratorCommandClient(orchestrator, coordinator);
   orchestrator.setCommandExecutionClient(commandClient as unknown as QuantumClient);

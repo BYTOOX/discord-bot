@@ -2,163 +2,55 @@ import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { SlashCommand } from "../core/types";
 import { sendReply } from "../core/interactionReply";
-import { buildMusicPanel, disablePanelRows } from "../modules/music/MusicPanel";
-import { ensureDjPermission, mustGetGuildId } from "./utils";
+import { ensureCommandCenterPermission, mustGetGuildId } from "./utils";
 
 export const panelCommand: SlashCommand = {
   data: new SlashCommandBuilder()
     .setName("panel")
-    .setDescription("Gere le panneau musique dynamique.")
+    .setDescription("Gere le command center musique.")
     .addSubcommand((subcommand) =>
-      subcommand.setName("pin").setDescription("Epingle un panneau musique moderne dans ce salon.")
+      subcommand.setName("refresh").setDescription("Force une synchronisation du command center.")
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName("refresh").setDescription("Force un rafraichissement du panneau epingle.")
+      subcommand.setName("rebuild").setDescription("Reposte proprement le command center.")
     )
     .addSubcommand((subcommand) =>
-      subcommand.setName("unpin").setDescription("Retire le panneau epingle pour ce serveur.")
+      subcommand.setName("clean").setDescription("Nettoie le salon musique puis reposte le command center.")
     ),
   async execute(interaction, client) {
-    if (!(await ensureDjPermission(interaction, client))) {
+    if (!(await ensureCommandCenterPermission(interaction, client))) {
       return;
     }
 
     const guildId = mustGetGuildId(interaction);
     const subcommand = interaction.options.getSubcommand(true);
 
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     switch (subcommand) {
-      case "pin": {
-        const targetChannel = interaction.channel;
-        if (!targetChannel?.isTextBased() || !("send" in targetChannel)) {
-          throw new Error("Ce salon ne permet pas d'envoyer un panneau.");
-        }
-
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-        const previous = await client.getRegisteredMusicPanel(guildId);
-        const panelState = await client.musicService.getPanelState(guildId);
-        const panelDisplay = await client.getPanelDisplayOrFallback(guildId, interaction.user.id);
-        const panel = buildMusicPanel(
-          panelDisplay,
-          client.config.musicPanelEmoji,
-          panelState,
-          "Panel epingle."
-        );
-
-        const sent = await targetChannel.send({
-          components: panel.components,
-          flags: panel.flags
-        });
-        await client.registerMusicPanelMessage(guildId, sent.channelId, sent.id);
-
-        if (previous && (previous.channelId !== sent.channelId || previous.messageId !== sent.id)) {
-          await disablePanelMessage(client, previous.channelId, previous.messageId, "Panel deplace.");
-        }
-
-        await client.refreshRegisteredMusicPanel(guildId, "Panel epingle.");
+      case "refresh":
+        await client.refreshRegisteredMusicPanel(guildId, "Refresh manuel.");
         await sendReply(interaction, {
-          content: `Panel epingle dans <#${sent.channelId}>.`,
+          content: "Command center synchronise.",
           flags: MessageFlags.Ephemeral
         });
         return;
-      }
-
-      case "refresh": {
-        const refreshed = await client.refreshRegisteredMusicPanel(
-          guildId,
-          "Rafraichissement manuel."
-        );
-        if (!refreshed) {
-          await sendReply(interaction, {
-            content: "Aucun panneau epingle. Utilise `/panel pin`.",
-            flags: MessageFlags.Ephemeral
-          });
-          return;
-        }
-
+      case "rebuild":
+        await client.forceRebuildMusicControlSurface(guildId);
         await sendReply(interaction, {
-          content: "Panel rafraichi.",
+          content: "Command center reconstruit.",
           flags: MessageFlags.Ephemeral
         });
         return;
-      }
-
-      case "unpin": {
-        const current = await client.getRegisteredMusicPanel(guildId);
-        if (!current) {
-          await sendReply(interaction, {
-            content: "Aucun panneau epingle pour ce serveur.",
-            flags: MessageFlags.Ephemeral
-          });
-          return;
-        }
-
-        await client.clearRegisteredMusicPanel(guildId);
-        await disablePanelMessage(client, current.channelId, current.messageId, "Panel desepingle.");
+      case "clean":
+        await client.cleanMusicControlSurface(guildId);
         await sendReply(interaction, {
-          content: "Panel desepingle.",
+          content: "Salon musique nettoye et command center reposte.",
           flags: MessageFlags.Ephemeral
         });
         return;
-      }
-
       default:
         throw new Error("Sous-commande panel inconnue.");
     }
   }
 };
-
-async function disablePanelMessage(
-  client: {
-    channels: { fetch(id: string): Promise<unknown> };
-    logger: { debug(payload: unknown, msg: string): void };
-  },
-  channelId: string,
-  messageId: string,
-  reason: string
-): Promise<void> {
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || typeof channel !== "object" || !("isTextBased" in channel)) {
-      return;
-    }
-
-    if (!(channel as { isTextBased(): boolean }).isTextBased() || !("messages" in channel)) {
-      return;
-    }
-
-    const textChannel = channel as {
-      messages: {
-        fetch(id: string): Promise<{
-          components: unknown[];
-          embeds: unknown[];
-          edit(payload: unknown): Promise<unknown>;
-        }>;
-      };
-    };
-    const message = await textChannel.messages.fetch(messageId);
-    const rows = extractButtonRows(
-      message.components as ReadonlyArray<{ toJSON(): { type: number; components?: unknown[] } }>
-    );
-    await message.edit({
-      components: disablePanelRows(rows),
-      flags: MessageFlags.IsComponentsV2,
-      content: `Panel inactif: ${reason}`
-    });
-  } catch (error) {
-    client.logger.debug({ err: error, channelId, messageId }, "Impossible de desactiver l'ancien panel");
-  }
-}
-
-function extractButtonRows(
-  rows: ReadonlyArray<{ toJSON(): { type: number; components?: unknown[] } }>
-): Array<{ components: ReadonlyArray<unknown> }> {
-  return rows
-    .map((row) => row.toJSON())
-    .filter((component) => component.type === 1 && Array.isArray(component.components))
-    .map((component) => ({
-      components: component.components ?? []
-    }));
-}
-
-

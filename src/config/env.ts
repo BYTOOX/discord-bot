@@ -29,6 +29,7 @@ const envSchema = z.object({
     .default("true")
     .transform((value) => value === "true"),
   MUSIC_PANEL_EMOJI: z.string().default("\u{1F4BF}"),
+  MUSIC_CONTROL_CHANNEL_ID: z.string().default(""),
   AUTOPLAY_DEFAULT: z
     .enum(["true", "false"])
     .default("false")
@@ -38,6 +39,7 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   DJ_ROLE_IDS: z.string().default(""),
+  COMMAND_CENTER_ROLE_IDS: z.string().default(""),
   MAX_CUSTOM_PLAYLISTS: z.coerce.number().int().min(1).default(50),
   MAX_TRACKS_PER_PLAYLIST: z
     .coerce
@@ -65,9 +67,11 @@ export interface AppConfig {
   playerEmptyTimeoutMs: number;
   playerSelfDeaf: boolean;
   musicPanelEmoji: string;
+  musicControlChannelId: string | null;
   autoplayDefault: boolean;
   stayInVoiceDefault: boolean;
   djRoleIds: string[];
+  commandCenterRoleIds: string[];
   maxCustomPlaylists: number;
   maxTracksPerPlaylist: number;
 }
@@ -76,6 +80,10 @@ export function loadConfig(): AppConfig {
   const parsed = envSchema.parse(process.env);
 
   const djRoleIds = parsed.DJ_ROLE_IDS.split(",")
+    .map((roleId) => roleId.trim())
+    .filter((roleId) => roleId.length > 0);
+
+  const commandCenterRoleIds = parsed.COMMAND_CENTER_ROLE_IDS.split(",")
     .map((roleId) => roleId.trim())
     .filter((roleId) => roleId.length > 0);
 
@@ -110,9 +118,14 @@ export function loadConfig(): AppConfig {
     playerEmptyTimeoutMs: parsed.PLAYER_EMPTY_TIMEOUT_MS,
     playerSelfDeaf: parsed.PLAYER_SELF_DEAF,
     musicPanelEmoji: parsed.MUSIC_PANEL_EMOJI,
+    musicControlChannelId:
+      parsed.MUSIC_CONTROL_CHANNEL_ID.trim().length > 0
+        ? parsed.MUSIC_CONTROL_CHANNEL_ID.trim()
+        : null,
     autoplayDefault: parsed.AUTOPLAY_DEFAULT,
     stayInVoiceDefault: parsed.STAY_IN_VOICE_DEFAULT,
     djRoleIds,
+    commandCenterRoleIds,
     maxCustomPlaylists: parsed.MAX_CUSTOM_PLAYLISTS,
     maxTracksPerPlaylist: parsed.MAX_TRACKS_PER_PLAYLIST
   };

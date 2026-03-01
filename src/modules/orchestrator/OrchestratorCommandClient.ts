@@ -1,4 +1,3 @@
-import type { MusicPanelDisplay } from "../music/types";
 import type { QuantumClient } from "../../core/QuantumClient";
 import type { ChannelBoundJukeboxCoordinator } from "./ChannelBoundJukeboxCoordinator";
 
@@ -32,31 +31,15 @@ export class OrchestratorCommandClient {
     return this.coordinator;
   }
 
-  public async refreshRegisteredMusicPanel(_guildId: string, _status?: string): Promise<boolean> {
-    return true;
+  public async refreshRegisteredMusicPanel(guildId: string, status?: string): Promise<boolean> {
+    return this.orchestrator.refreshRegisteredMusicPanel(guildId, status);
   }
 
-  public async registerMusicPanelMessage(
-    _guildId: string,
-    _channelId: string,
-    _messageId: string
-  ): Promise<void> {}
-
-  public async getRegisteredMusicPanel(
-    _guildId: string
-  ): Promise<{ channelId: string; messageId: string } | null> {
-    return null;
+  public async forceRebuildMusicControlSurface(guildId: string): Promise<boolean> {
+    return this.orchestrator.forceRebuildMusicControlSurface(guildId);
   }
 
-  public async clearRegisteredMusicPanel(_guildId: string): Promise<boolean> {
-    return false;
-  }
-
-  public async getPanelDisplayOrFallback(
-    _guildId: string,
-    _requestedById?: string
-  ): Promise<MusicPanelDisplay> {
-    throw new Error("Le panneau musique est desactive en mode orchestrateur multi-jukebox.");
+  public async cleanMusicControlSurface(guildId: string): Promise<boolean> {
+    return this.orchestrator.cleanMusicControlSurface(guildId);
   }
 }
-
