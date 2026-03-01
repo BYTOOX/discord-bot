@@ -66,43 +66,6 @@ export class PostgresService {
     `);
 
     await this.query(`
-      CREATE TABLE IF NOT EXISTS custom_playlists (
-        id UUID PRIMARY KEY,
-        guild_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        key TEXT NOT NULL UNIQUE,
-        created_by TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL
-      )
-    `);
-
-    await this.query(
-      "CREATE INDEX IF NOT EXISTS idx_custom_playlists_guild_id ON custom_playlists (guild_id)"
-    );
-
-    await this.query(`
-      CREATE TABLE IF NOT EXISTS playlist_tracks (
-        id BIGSERIAL PRIMARY KEY,
-        playlist_id UUID NOT NULL REFERENCES custom_playlists(id) ON DELETE CASCADE,
-        position INTEGER NOT NULL,
-        query TEXT NOT NULL,
-        title TEXT NOT NULL,
-        url TEXT,
-        added_by TEXT NOT NULL,
-        added_at TIMESTAMPTZ NOT NULL
-      )
-    `);
-
-    await this.query(
-      "CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_id ON playlist_tracks (playlist_id)"
-    );
-
-    await this.query(
-      "CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_position ON playlist_tracks (playlist_id, position)"
-    );
-
-    await this.query(`
       CREATE TABLE IF NOT EXISTS music_panels (
         guild_id TEXT PRIMARY KEY,
         channel_id TEXT NOT NULL,

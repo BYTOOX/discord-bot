@@ -23,10 +23,6 @@ export class OrchestratorCommandClient {
     return this.orchestrator.accessPolicy;
   }
 
-  public get playlistService() {
-    return this.orchestrator.playlistService;
-  }
-
   public get musicService() {
     return this.coordinator;
   }

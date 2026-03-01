@@ -11,7 +11,6 @@ import type { Logger } from "pino";
 import type { AppConfig } from "../config/env";
 import { PostgresService } from "../modules/infrastructure/PostgresService";
 import { RedisLockService } from "../modules/infrastructure/RedisLockService";
-import { CustomPlaylistService } from "../modules/playlists/CustomPlaylistService";
 import { GuildSettingsService } from "../modules/music/GuildSettingsService";
 import { LavalinkService } from "../modules/music/LavalinkService";
 import { MusicControlSurfaceService } from "../modules/music/MusicControlSurfaceService";
@@ -41,7 +40,6 @@ export class QuantumClient extends Client {
   public readonly redisLockService: RedisLockService;
   public readonly commandRegistry: CommandRegistry;
   public readonly accessPolicy: AccessPolicyService;
-  public readonly playlistService: CustomPlaylistService;
   public readonly guildSettingsService: GuildSettingsService;
   public readonly providerResolver: ProviderResolver;
   public readonly lavalinkService: LavalinkService;
@@ -70,14 +68,6 @@ export class QuantumClient extends Client {
     this.redisLockService = new RedisLockService(config.redisUrl, logger.child({ scope: "redis" }));
     this.commandRegistry = new CommandRegistry(config, logger.child({ scope: "commands" }));
     this.accessPolicy = new AccessPolicyService(config);
-    this.playlistService = new CustomPlaylistService(
-      this.postgresService,
-      {
-        maxPlaylists: config.maxCustomPlaylists,
-        maxTracksPerPlaylist: config.maxTracksPerPlaylist
-      },
-      logger.child({ scope: "playlists" })
-    );
     this.guildSettingsService = new GuildSettingsService(
       this.postgresService,
       {
@@ -92,7 +82,6 @@ export class QuantumClient extends Client {
     this.musicService = new MusicService(
       this.lavalinkService,
       this.providerResolver,
-      this.playlistService,
       this.guildSettingsService,
       config.playerEmptyTimeoutMs,
       config.playerSelfDeaf,

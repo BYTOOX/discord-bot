@@ -8,7 +8,6 @@ import { pauseCommand } from "./pause";
 import { panelCommand } from "./panel";
 import { pingCommand } from "./ping";
 import { playCommand } from "./play";
-import { playlistCommand } from "./playlist";
 import { queueCommand } from "./queue";
 import { resumeCommand } from "./resume";
 import { skipCommand } from "./skip";
@@ -29,8 +28,7 @@ export const commands: SlashCommand[] = [
   volumeCommand,
   autoplayCommand,
   mode247Command,
-  filterCommand,
-  playlistCommand
+  filterCommand
 ];
 
 export const orchestratorCommands: SlashCommand[] = commands;

@@ -84,23 +84,6 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     );
   }
 
-  public async playCustomPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    shuffle: boolean
-  ): Promise<{ addedCount: number; requestedCount: number; duplicateSkippedCount: number }> {
-    return this.delegateWithFailover(
-      interaction,
-      { createIfMissing: true },
-      (context) =>
-        context.slot.client.musicService.playCustomPlaylist(
-          context.slotInteraction,
-          playlistName,
-          shuffle
-        )
-    );
-  }
-
   public async skip(interaction: ChatInputCommandInteraction): Promise<QueueTrack | null> {
     return this.delegateWithFailover(
       interaction,
@@ -188,64 +171,6 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       async (context) => {
         await context.slot.client.musicService.applyFilter(context.slotInteraction, effect);
       }
-    );
-  }
-
-  public async saveCurrentTrackToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string
-  ): Promise<QueueTrack> {
-    return this.delegateWithFailover(
-      interaction,
-      { createIfMissing: false },
-      (context) =>
-        context.slot.client.musicService.saveCurrentTrackToPlaylist(
-          context.slotInteraction,
-          playlistName
-        )
-    );
-  }
-
-  public async saveQueueToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string
-  ): Promise<{ addedCount: number; attemptedCount: number }> {
-    return this.delegateWithFailover(
-      interaction,
-      { createIfMissing: false },
-      (context) =>
-        context.slot.client.musicService.saveQueueToPlaylist(context.slotInteraction, playlistName)
-    );
-  }
-
-  public async addQueryToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    query: string
-  ): Promise<{ addedCount: number; attemptedCount: number; sourceLabel: string }> {
-    const slot = this.findFirstOperationalSlot([], interaction.guildId ?? undefined);
-    if (!slot) {
-      throw new Error(this.buildNoJukeboxAvailableMessage());
-    }
-
-    const slotInteraction = await this.buildSlotInteraction(interaction, slot);
-    return slot.client.musicService.addQueryToPlaylist(slotInteraction, playlistName, query);
-  }
-
-  public async saveSessionHistoryToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    maxTracks = 30
-  ): Promise<{ addedCount: number; attemptedCount: number; availableCount: number }> {
-    return this.delegateWithFailover(
-      interaction,
-      { createIfMissing: false },
-      (context) =>
-        context.slot.client.musicService.saveSessionHistoryToPlaylist(
-          context.slotInteraction,
-          playlistName,
-          maxTracks
-        )
     );
   }
 

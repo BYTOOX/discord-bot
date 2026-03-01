@@ -27,7 +27,7 @@ Quantum Jukebox vise un equilibre clair:
 | Priorite recherche texte | YouTube |
 | Liens directs | Spotify accepte, YouTube accepte |
 | Providers non supportes | Rejet explicite (pas de fallback SoundCloud/Apple/Deezer) |
-| Playlists | Import complet, plafond de securite a **101** pistes par import |
+| Imports multi-pistes | Import complet, plafond de securite a **101** pistes par import |
 | Deploiement | Une seule infra Docker Compose |
 | Persistance | PostgreSQL |
 | Coordination runtime | Redis (locks distribues + synchronisation) |
@@ -75,7 +75,7 @@ flowchart LR
     O --> J2[Jukebox #2]
     O --> J3[Jukebox #3]
     O --> R[(Redis\nlocks distribues)]
-    O --> P[(PostgreSQL\nsettings + playlists)]
+    O --> P[(PostgreSQL\nsettings + panels)]
     J1 --> L[Lavalink v4\nyoutube-plugin + lavasrc]
     J2 --> L
     J3 --> L
@@ -124,8 +124,6 @@ flowchart LR
 | `MUSIC_CONTROL_CHANNEL_ID` | Non | vide | Salon texte dedie au Command Center musique |
 | `DJ_ROLE_IDS` | Non | vide | IDs de roles DJ autorises (CSV) |
 | `COMMAND_CENTER_ROLE_IDS` | Non | vide | IDs de roles autorises a gerer le Command Center (slash + boutons) |
-| `MAX_CUSTOM_PLAYLISTS` | Non | `50` | Nombre maximum de playlists custom par serveur |
-| `MAX_TRACKS_PER_PLAYLIST` | Non | `101` | Plafonne automatiquement les imports/sauvegardes a `101` |
 | `DEFAULT_VOLUME` | Non | `80` | Volume par defaut |
 | `PLAYER_EMPTY_TIMEOUT_MS` | Non | `300000` | Timeout avant deconnexion auto d'un player vide |
 | `PLAYER_SELF_DEAF` | Non | `true` | Active l'auto-deafen du bot en vocal |
@@ -150,6 +148,7 @@ flowchart LR
 - `/leave`
 - `/volume value:<1-200>`
 - `/filter effect:<reset|nightcore|vaporwave|bassboost|rock>`
+- URLs de playlists YouTube/Spotify: acceptees via `/play` (max `101` pistes par ajout)
 
 ### Comportement serveur
 
@@ -170,23 +169,11 @@ Le panel legacy n'est plus utilise.
 - `/panel rebuild`
 - `/panel clean`
 
-### Playlists custom
-
-- `/playlist create name`
-- `/playlist list`
-- `/playlist info name`
-- `/playlist add name query`
-- `/playlist savecurrent name`
-- `/playlist savequeue name`
-- `/playlist savesession name [limit<=101]`
-- `/playlist remove name index`
-- `/playlist play name [shuffle]`
-
 ## Contrat fonctionnel
 
 - Recherche texte: **YouTube prioritaire**.
 - Spotify: accepte via **liens directs** (metadonnees resolues par Lavalink/LavaSrc).
-- Import playlist: max `101` pistes par operation.
+- Import de playlists externes: max `101` pistes par operation.
 - Sources non supportees: erreur explicite, en francais.
 - Routing vocal: **1 jukebox max par salon vocal** et **1 salon max par jukebox**.
 - Binding: un jukebox reste attache au salon jusqu'a deconnexion.
@@ -301,6 +288,5 @@ src/
   modules/infrastructure/    PostgreSQL + Redis locks
   modules/music/             playback, command center, settings, lavalink
   modules/orchestrator/      allocation channel-bound et pool jukebox
-  modules/playlists/         playlists custom
   modules/providers/         resolution des providers (YouTube/Spotify)
 ```

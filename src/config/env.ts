@@ -39,15 +39,7 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   DJ_ROLE_IDS: z.string().default(""),
-  COMMAND_CENTER_ROLE_IDS: z.string().default(""),
-  MAX_CUSTOM_PLAYLISTS: z.coerce.number().int().min(1).default(50),
-  MAX_TRACKS_PER_PLAYLIST: z
-    .coerce
-    .number()
-    .int()
-    .min(1)
-    .default(101)
-    .transform((value) => Math.min(101, value))
+  COMMAND_CENTER_ROLE_IDS: z.string().default("")
 });
 
 export interface AppConfig {
@@ -72,8 +64,6 @@ export interface AppConfig {
   stayInVoiceDefault: boolean;
   djRoleIds: string[];
   commandCenterRoleIds: string[];
-  maxCustomPlaylists: number;
-  maxTracksPerPlaylist: number;
 }
 
 export function loadConfig(): AppConfig {
@@ -125,9 +115,7 @@ export function loadConfig(): AppConfig {
     autoplayDefault: parsed.AUTOPLAY_DEFAULT,
     stayInVoiceDefault: parsed.STAY_IN_VOICE_DEFAULT,
     djRoleIds,
-    commandCenterRoleIds,
-    maxCustomPlaylists: parsed.MAX_CUSTOM_PLAYLISTS,
-    maxTracksPerPlaylist: parsed.MAX_TRACKS_PER_PLAYLIST
+    commandCenterRoleIds
   };
 }
 

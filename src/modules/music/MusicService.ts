@@ -11,8 +11,6 @@ import {
 import type { Player, Track, UnresolvedTrack } from "lavalink-client";
 import type { Logger } from "pino";
 
-import type { CustomPlaylistService } from "../playlists/CustomPlaylistService";
-import type { PlaylistTrackInput } from "../playlists/types";
 import type { ProviderResolver } from "../providers/ProviderResolver";
 import {
   PANEL_BUTTONS,
@@ -21,9 +19,9 @@ import {
   type PanelSelectAction,
   type PanelState
 } from "./MusicPanel";
-import { LavalinkService, type LavalinkLoadResult, type LavalinkRawTrack } from "./LavalinkService";
+import { LavalinkService } from "./LavalinkService";
 import type { GuildSettingsService } from "./GuildSettingsService";
-import { displayTrack, formatDuration, toPlaylistTrackInput } from "./trackHelpers";
+import { displayTrack, formatDuration } from "./trackHelpers";
 import type {
   EnqueueResult,
   GuildPlaybackSettings,
@@ -31,7 +29,6 @@ import type {
   QueueTrack
 } from "./types";
 
-const MAX_PLAYLIST_RESOLVE_PER_CALL = 101;
 const MAX_TRACKS_PER_IMPORT = 101;
 const TRACK_ERROR_GRACE_PERIOD_MS = 90_000;
 const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
@@ -72,7 +69,6 @@ export class MusicService {
   public constructor(
     private readonly lavalink: LavalinkService,
     private readonly providers: ProviderResolver,
-    private readonly playlistService: CustomPlaylistService,
     private readonly guildSettings: GuildSettingsService,
     private readonly emptyDestroyTimeoutMs: number,
     private readonly selfDeaf: boolean,
@@ -168,72 +164,6 @@ export class MusicService {
     }
 
     return enqueueResult;
-  }
-
-  public async playCustomPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    shuffle: boolean
-  ): Promise<{ addedCount: number; requestedCount: number; duplicateSkippedCount: number }> {
-    if (!interaction.guildId) {
-      throw new Error("Cette commande ne fonctionne que sur un serveur.");
-    }
-
-    const playlist = await this.playlistService.getPlaylist(interaction.guildId, playlistName);
-    if (!playlist) {
-      throw new Error(`Playlist introuvable: "${playlistName}".`);
-    }
-
-    if (playlist.tracks.length === 0) {
-      throw new Error(`La playlist "${playlist.name}" est vide.`);
-    }
-
-    const voiceChannel = await this.getRequiredUserVoiceChannel(interaction);
-    const settings = await this.guildSettings.get(interaction.guildId);
-    const player = await this.getOrCreatePlayer(interaction, voiceChannel, settings.volume);
-
-    const tracks = [...playlist.tracks];
-    const selectedTracks = shuffle ? shuffleArray(tracks) : tracks;
-    const cappedTracks = selectedTracks.slice(0, MAX_PLAYLIST_RESOLVE_PER_CALL);
-    const knownTrackKeys = this.collectTrackKeysForPlayer(player);
-
-    let addedCount = 0;
-    let duplicateSkippedCount = 0;
-    for (const track of cappedTracks) {
-      const result = await player.search(this.providers.resolve(track.query).searchQuery, {
-        id: interaction.user.id,
-        username: interaction.user.username
-      });
-
-      if (result.tracks.length === 0) {
-        continue;
-      }
-
-      const resolvedTrack = result.tracks[0] as Track | UnresolvedTrack;
-      const trackKey = this.getTrackKey(resolvedTrack);
-      if (knownTrackKeys.has(trackKey)) {
-        duplicateSkippedCount += 1;
-        continue;
-      }
-
-      knownTrackKeys.add(trackKey);
-      await player.queue.add(resolvedTrack as Track);
-      addedCount += 1;
-    }
-
-    if (addedCount === 0) {
-      throw new Error("Aucune piste de la playlist n'a pu etre lue.");
-    }
-
-    if (!player.playing && !player.paused) {
-      await player.play();
-    }
-
-    return {
-      addedCount,
-      requestedCount: cappedTracks.length,
-      duplicateSkippedCount
-    };
   }
 
   public async skip(interaction: ChatInputCommandInteraction): Promise<QueueTrack | null> {
@@ -346,140 +276,6 @@ export class MusicService {
       default:
         throw new Error("Filtre non supporte.");
     }
-  }
-
-  public async saveCurrentTrackToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string
-  ): Promise<QueueTrack> {
-    const player = await this.getRequiredPlayerInSameVoice(interaction);
-    if (!interaction.guildId) {
-      throw new Error("Cette commande ne fonctionne que sur un serveur.");
-    }
-
-    const current = player.queue.current;
-    if (!current) {
-      throw new Error("Aucune piste en cours a sauvegarder.");
-    }
-
-    await this.playlistService.addTrack(
-      interaction.guildId,
-      playlistName,
-      toPlaylistTrackInput(current, interaction.user.id)
-    );
-    return current;
-  }
-
-  public async saveQueueToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string
-  ): Promise<{ addedCount: number; attemptedCount: number }> {
-    const player = await this.getRequiredPlayerInSameVoice(interaction);
-    if (!interaction.guildId) {
-      throw new Error("Cette commande ne fonctionne que sur un serveur.");
-    }
-
-    const tracks: QueueTrack[] = [];
-    if (player.queue.current) {
-      tracks.push(player.queue.current);
-    }
-    tracks.push(...player.queue.tracks);
-
-    if (tracks.length === 0) {
-      throw new Error("La file d'attente est vide.");
-    }
-
-    const playlistTracks: PlaylistTrackInput[] = tracks.map((track) =>
-      toPlaylistTrackInput(track, interaction.user.id)
-    );
-
-    const result = await this.playlistService.addTracks(
-      interaction.guildId,
-      playlistName,
-      playlistTracks
-    );
-
-    return {
-      addedCount: result.addedCount,
-      attemptedCount: playlistTracks.length
-    };
-  }
-
-  public async addQueryToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    query: string
-  ): Promise<{ addedCount: number; attemptedCount: number; sourceLabel: string }> {
-    if (!interaction.guildId) {
-      throw new Error("Cette commande ne fonctionne que sur un serveur.");
-    }
-
-    if (!this.lavalink.manager.useable) {
-      throw new Error("Aucun noeud Lavalink n'est connecte.");
-    }
-
-    const resolution = this.providers.resolve(query);
-    const loadResult = await this.lavalink.loadTracks(resolution.searchQuery);
-    const loadedTracks = this.extractTracksFromLoadResult(loadResult);
-
-    if (loadedTracks.length === 0) {
-      throw new Error("Aucune piste valide trouvee pour cette URL/recherche.");
-    }
-
-    const cappedTracks = loadedTracks.slice(0, MAX_TRACKS_PER_IMPORT);
-    const inputs: PlaylistTrackInput[] = cappedTracks.map((track) =>
-      this.toPlaylistTrackInputFromRawTrack(track, interaction.user.id)
-    );
-
-    const result = await this.playlistService.addTracks(interaction.guildId, playlistName, inputs);
-    return {
-      addedCount: result.addedCount,
-      attemptedCount: inputs.length,
-      sourceLabel: resolution.provider
-    };
-  }
-
-  public async saveSessionHistoryToPlaylist(
-    interaction: ChatInputCommandInteraction,
-    playlistName: string,
-    maxTracks = 30
-  ): Promise<{ addedCount: number; attemptedCount: number; availableCount: number }> {
-    if (!interaction.guildId) {
-      throw new Error("Cette commande ne fonctionne que sur un serveur.");
-    }
-
-    const session = this.sessionByGuild.get(interaction.guildId);
-    if (!session || session.recentTracks.length === 0) {
-      throw new Error("Aucune session recente a sauvegarder.");
-    }
-
-    const clamped = Math.max(1, Math.min(101, maxTracks));
-    const selected = session.recentTracks.slice(-clamped);
-    const playlistTracks: PlaylistTrackInput[] = selected.map((track) => {
-      const payload: PlaylistTrackInput = {
-        query: track.query,
-        title: `${track.title} - ${track.author}`.trim(),
-        addedBy: interaction.user.id
-      };
-
-      if (track.url) {
-        payload.url = track.url;
-      }
-
-      return payload;
-    });
-
-    const result = await this.playlistService.addTracks(
-      interaction.guildId,
-      playlistName,
-      playlistTracks
-    );
-
-    return {
-      addedCount: result.addedCount,
-      attemptedCount: playlistTracks.length,
-      availableCount: session.recentTracks.length
-    };
   }
 
   public getQueueSummary(
@@ -1330,61 +1126,6 @@ export class MusicService {
     return created;
   }
 
-  private extractTracksFromLoadResult(loadResult: LavalinkLoadResult): LavalinkRawTrack[] {
-    switch (loadResult.loadType) {
-      case "track":
-        return loadResult.data ? [loadResult.data] : [];
-      case "search":
-        return loadResult.data ?? [];
-      case "playlist":
-        return loadResult.data.tracks ?? [];
-      case "error": {
-        const message = loadResult.data.message ?? "Erreur Lavalink inconnue.";
-        throw new Error(`Echec de chargement des pistes: ${message}`);
-      }
-      case "empty":
-      default:
-        return [];
-    }
-  }
-
-  private toPlaylistTrackInputFromRawTrack(track: LavalinkRawTrack, addedBy: string): PlaylistTrackInput {
-    const title = track.info.title?.trim() || "Titre inconnu";
-    const author = track.info.author?.trim() || "Auteur inconnu";
-    const query = this.resolveTrackQuery(track);
-
-    const payload: PlaylistTrackInput = {
-      query,
-      title: `${title} - ${author}`.trim(),
-      addedBy
-    };
-
-    const uri = track.info.uri?.trim();
-    if (uri) {
-      payload.url = uri;
-    }
-
-    return payload;
-  }
-
-  private resolveTrackQuery(track: LavalinkRawTrack): string {
-    const uri = track.info.uri?.trim();
-    if (uri) {
-      return uri;
-    }
-
-    const identifier = track.info.identifier?.trim();
-    const sourceName = track.info.sourceName?.toLowerCase() ?? "";
-    if (identifier && sourceName.includes("youtube")) {
-      return `https://www.youtube.com/watch?v=${identifier}`;
-    }
-
-    const title = track.info.title?.trim() ?? "";
-    const author = track.info.author?.trim() ?? "";
-    const fallback = `${title} ${author}`.trim();
-    return fallback || identifier || "inconnu";
-  }
-
   private collectTrackKeysForPlayer(player: Player): Set<string> {
     const keys = new Set<string>();
     if (player.queue.current) {
@@ -1793,19 +1534,4 @@ export class MusicService {
 
     return "off";
   }
-}
-
-function shuffleArray<T>(array: T[]): T[] {
-  for (let index = array.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    const current = array[index];
-    const swap = array[swapIndex];
-    if (current === undefined || swap === undefined) {
-      continue;
-    }
-
-    array[index] = swap;
-    array[swapIndex] = current;
-  }
-  return array;
 }
