@@ -21,6 +21,19 @@ const SESSION_AUTO_REMOVE_DELAY_MS = 90 * 1000;
 const COMMAND_CENTER_COLOR = 0x19c2ff;
 const SESSION_LIVE_COLOR = 0x2dd4bf;
 const SESSION_IDLE_COLOR = 0xf59e0b;
+const MAX_DISCORD_MESSAGE_EMBEDS = 10;
+const COMMAND_CENTER_STATIC_EMBED_COUNT = 2;
+const MAX_JUKEBOX_SLOT_EMBEDS = MAX_DISCORD_MESSAGE_EMBEDS - COMMAND_CENTER_STATIC_EMBED_COUNT;
+const JUKEBOX_CARD_COLORS = [
+  0xff6b6b,
+  0x4dabf7,
+  0x51cf66,
+  0xf59f00,
+  0x845ef7,
+  0x2ec4b6,
+  0xe8590c,
+  0xf06595
+] as const;
 
 export const COMMAND_CENTER_BUTTONS = {
   refresh: `${COMMAND_CENTER_PREFIX}:refresh`,
@@ -407,6 +420,8 @@ export class MusicControlSurfaceService {
     const sessionSnapshots = this.getSessionSnapshots(guildId).filter((snapshot) =>
       this.shouldRenderSessionPanel(snapshot)
     );
+    const visibleSlots = slotSnapshots.slice(0, MAX_JUKEBOX_SLOT_EMBEDS);
+    const hiddenSlotCount = Math.max(0, slotSnapshots.length - visibleSlots.length);
     const onlineCount = slotSnapshots.filter((slot) => slot.mode !== "offline").length;
     const footerStatus = status?.trim().length ? status.trim() : "En ligne";
     const spotlight = sessionSnapshots[0] ?? null;
@@ -455,24 +470,15 @@ export class MusicControlSurfaceService {
       heroEmbed.setURL(spotlight.trackUrl);
     }
 
-    const fleetEmbed = new EmbedBuilder()
-      .setColor(COMMAND_CENTER_COLOR)
-      .setTitle("🤖 Parc Jukebox")
-      .setDescription(
-        slotSnapshots.length === 0
-          ? "Aucun jukebox detecte."
-          : slotSnapshots
-              .map((slot) =>
-                this.joinSpaced([
-                  `${this.getSlotEmoji(slot.mode)} **${slot.callsign}**`,
-                  `Etat: ${this.formatSlotMode(slot.mode)}`,
-                  `Vocal: ${slot.voiceChannelId ? `<#${slot.voiceChannelId}>` : "Libre"}`,
-                  `File: ${slot.queueDepth}`,
-                  `En cours: ${slot.currentTrack ? this.truncate(slot.currentTrack, 90) : "Aucune piste"}`
-                ])
-              )
-              .join("\n\n")
-      );
+    if (hiddenSlotCount > 0) {
+      heroEmbed.addFields({
+        name: "Parc",
+        value: `+${hiddenSlotCount} jukebox non affiches (limite Discord).`,
+        inline: false
+      });
+    }
+
+    const slotEmbeds = this.buildJukeboxEmbeds(visibleSlots, slotSnapshots.length);
 
     const sessionsEmbed = new EmbedBuilder()
       .setColor(this.resolveAccentColor(spotlight?.sourceLabel, false))
@@ -497,9 +503,48 @@ export class MusicControlSurfaceService {
     }
 
     return {
-      embeds: [heroEmbed, fleetEmbed, sessionsEmbed],
+      embeds: [heroEmbed, ...slotEmbeds, sessionsEmbed],
       components: [this.buildCommandCenterActions()]
     };
+  }
+
+  private buildJukeboxEmbeds(
+    slotSnapshots: JukeboxSlotSnapshot[],
+    totalSlots: number
+  ): EmbedBuilder[] {
+    if (slotSnapshots.length === 0) {
+      return [
+        new EmbedBuilder()
+          .setColor(COMMAND_CENTER_COLOR)
+          .setTitle("Parc Jukebox")
+          .setDescription("Aucun jukebox detecte.")
+      ];
+    }
+
+    return slotSnapshots.map((slot, index) =>
+      new EmbedBuilder()
+        .setColor(this.resolveJukeboxCardColor(slot, index))
+        .setTitle(`${this.getSlotEmoji(slot.mode)} ${slot.callsign}`)
+        .setDescription(slot.currentTrack ? this.truncate(slot.currentTrack, 120) : "Aucune piste.")
+        .addFields(
+          {
+            name: "Etat",
+            value: this.formatSlotMode(slot.mode),
+            inline: true
+          },
+          {
+            name: "File",
+            value: `${slot.queueDepth} piste(s)`,
+            inline: true
+          },
+          {
+            name: "Vocal",
+            value: slot.voiceChannelId ? `<#${slot.voiceChannelId}>` : "Libre",
+            inline: true
+          }
+        )
+        .setFooter({ text: `Jukebox ${index + 1}/${Math.max(totalSlots, 1)}` })
+    );
   }
 
   private buildSessionPayload(snapshot: JukeboxSessionSnapshot, status?: string) {
@@ -703,6 +748,39 @@ export class MusicControlSurfaceService {
     }
   }
 
+  private resolveJukeboxCardColor(slot: JukeboxSlotSnapshot, fallbackIndex: number): number {
+    const colorIndex = this.resolveJukeboxColorIndex(slot.slotId, fallbackIndex);
+    const baseColor = JUKEBOX_CARD_COLORS[colorIndex % JUKEBOX_CARD_COLORS.length] ?? COMMAND_CENTER_COLOR;
+
+    switch (slot.mode) {
+      case "offline":
+        return this.scaleColor(baseColor, 0.45);
+      case "paused":
+        return this.scaleColor(baseColor, 0.7);
+      case "assigned":
+        return this.scaleColor(baseColor, 0.82);
+      default:
+        return baseColor;
+    }
+  }
+
+  private resolveJukeboxColorIndex(slotId: string, fallbackIndex: number): number {
+    const numericSuffix = slotId.match(/(\d+)$/)?.[1];
+    if (numericSuffix) {
+      const parsed = Number.parseInt(numericSuffix, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed - 1;
+      }
+    }
+
+    let hash = 0;
+    for (const char of slotId) {
+      hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+    }
+
+    return Math.abs(hash) + fallbackIndex;
+  }
+
   private formatSourceLabel(value: string | undefined): string {
     const source = value?.trim().toLowerCase() ?? "";
     if (source.includes("spotify")) {
@@ -756,6 +834,14 @@ export class MusicControlSurfaceService {
     }
 
     return SESSION_LIVE_COLOR;
+  }
+
+  private scaleColor(color: number, factor: number): number {
+    const safeFactor = Math.max(0, Math.min(1.5, factor));
+    const red = Math.min(255, Math.round(((color >> 16) & 0xff) * safeFactor));
+    const green = Math.min(255, Math.round(((color >> 8) & 0xff) * safeFactor));
+    const blue = Math.min(255, Math.round((color & 0xff) * safeFactor));
+    return (red << 16) | (green << 8) | blue;
   }
 
   private getSlotEmoji(mode: JukeboxSlotSnapshot["mode"]): string {
