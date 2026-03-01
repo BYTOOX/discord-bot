@@ -1,6 +1,6 @@
 ﻿# Quantum Jukebox
 
-> Bot musical Discord haut de gamme, pensé pour **un seul serveur Discord** avec déploiement **multi-réplicas** stable sur une seule infra.
+> Bot musical Discord haut de gamme, pense pour **un seul serveur Discord** avec deux modes de runtime: **solo** ou **1 orchestrateur + pool de jukebox vocaux**.
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-22-3C873A?logo=node.js&logoColor=white)
@@ -10,30 +10,30 @@
 
 ## Vision
 
-Quantum Jukebox vise un équilibre clair:
+Quantum Jukebox vise un equilibre clair:
 
-- **Expérience utilisateur premium**: panel interactif moderne + rendu image dynamique.
-- **Fiabilité production**: état partagé, verrous distribués, exécution multi-réplicas.
-- **Simplicité d'exploitation**: stack Docker Compose unique.
-- **Cohérence produit**: YouTube + Spotify uniquement, messages en français.
-- **Orchestration multi-bots**: 1 orchestrateur + pool de jukebox vocaux.
+- **Experience utilisateur premium**: Command Center interactif + messages de session par jukebox.
+- **Fiabilite production**: etat partage, verrous distribues, coordination inter-processus.
+- **Simplicite d'exploitation**: stack Docker Compose unique.
+- **Coherence produit**: YouTube + Spotify uniquement, messages en francais.
+- **Orchestration multi-bots**: 1 orchestrateur + pool de jukebox vocaux distincts.
 
-## Caractéristiques clés
+## Caracteristiques cles
 
-| Axe | Décision produit |
+| Axe | Decision produit |
 | --- | --- |
-| Runtime bots | **1 orchestrateur + N jukebox** (N>=3 recommandé) |
+| Runtime bots | **1 bot unique** ou **1 orchestrateur + N jukebox** (N>=3 recommande) |
 | Sources audio | **YouTube** et **Spotify** uniquement |
-| Priorité recherche texte | YouTube |
-| Liens directs | Spotify accepté, YouTube accepté |
-| Providers non supportés | Rejet explicite (pas de fallback SoundCloud/Apple/Deezer) |
-| Playlists | Import complet, plafond de sécurité à **101** pistes par import |
-| Déploiement | Multi-réplicas d'un même bot sur une seule infra |
+| Priorite recherche texte | YouTube |
+| Liens directs | Spotify accepte, YouTube accepte |
+| Providers non supportes | Rejet explicite (pas de fallback SoundCloud/Apple/Deezer) |
+| Playlists | Import complet, plafond de securite a **101** pistes par import |
+| Deploiement | Une seule infra Docker Compose |
 | Persistance | PostgreSQL |
-| Coordination inter-réplicas | Redis (locks distribués) |
-| Langue | Français |
+| Coordination runtime | Redis (locks distribues + synchronisation) |
+| Langue | Francais |
 
-## Démarrage ultra rapide
+## Demarrage ultra rapide
 
 1. Copier la configuration:
 
@@ -47,20 +47,20 @@ cp .env.example .env
 - `DISCORD_CLIENT_ID`
 - `DISCORD_GUILD_ID`
 
-3. Lancer la stack complète:
+3. Lancer la stack complete:
 
 ```bash
 docker compose up -d --build
 ```
 
-4. Vérifier:
+4. Verifier:
 
 ```bash
 docker compose ps
 docker compose logs --tail=200 bot
 ```
 
-5. Arrêt propre:
+5. Arret propre:
 
 ```bash
 docker compose down
@@ -70,11 +70,11 @@ docker compose down
 
 ```mermaid
 flowchart LR
-    D[Discord Gateway/API] --> O[Orchestrateur\nslash commands]
+    D[Discord Gateway/API] --> O[Orchestrateur\nslash commands + Command Center]
     O --> J1[Jukebox #1]
     O --> J2[Jukebox #2]
     O --> J3[Jukebox #3]
-    O --> R[(Redis\nlocks distribués)]
+    O --> R[(Redis\nlocks distribues)]
     O --> P[(PostgreSQL\nsettings + playlists)]
     J1 --> L[Lavalink v4\nyoutube-plugin + lavasrc]
     J2 --> L
@@ -82,35 +82,61 @@ flowchart LR
     L --> C[yt-cipher]
 ```
 
-## Pourquoi le multi-réplicas reste stable
+## Modes de runtime
 
-- Les interactions Discord sont verrouillées via Redis pour éviter le double traitement.
-- Le state critique est partagé dans PostgreSQL (settings, playlists, registre panel).
-- Les commandes slash restent publiées sur le serveur cible (`DISCORD_GUILD_ID`) pour un usage mono-serveur maîtrisé.
+### Mode solo
+
+- Si `JUKEBOX_TOKENS` est vide, l'application demarre en **bot unique**.
+- Ce mode convient si un seul flux vocal simultane suffit.
+
+### Mode orchestrateur + jukebox
+
+- Si `JUKEBOX_TOKENS` contient **au moins 3 tokens**, l'application demarre en **1 orchestrateur + N jukebox**.
+- L'orchestrateur publie et traite les slash commands.
+- Les jukebox n'exposent pas de slash commands, restent invisibles, et servent uniquement au runtime vocal.
+- Le routing est **channel-bound**: un jukebox reste attache a son salon jusqu'a deconnexion.
+- Redis evite le double traitement et maintient la coherence des affectations.
+
+### A propos du `--scale bot=N`
+
+- `docker compose up -d --scale bot=3` avec **le meme token** ajoute de la redondance de process, pas de la concurrence vocale.
+- Un seul token Discord reste une seule identite: cela n'augmente pas le nombre de salons vocaux simultanes.
+- Pour jouer plusieurs musiques en parallele dans plusieurs salons, il faut le mode **orchestrateur + jukebox**.
 
 ## Configuration (variables importantes)
 
-| Variable | Requis | Défaut | Description |
+| Variable | Requis | Defaut | Description |
 | --- | --- | --- | --- |
-| `DISCORD_TOKEN` | Oui | - | Token du bot Discord |
-| `DISCORD_CLIENT_ID` | Oui | - | ID application Discord |
+| `DISCORD_TOKEN` | Oui | - | Token du bot Discord orchestrateur (ou du bot unique en mode solo) |
+| `DISCORD_CLIENT_ID` | Oui | - | ID application Discord de l'orchestrateur |
 | `DISCORD_GUILD_ID` | Oui | - | ID du serveur Discord cible |
-| `JUKEBOX_TOKENS` | Non | vide | CSV de tokens jukebox (active le mode orchestrateur si non vide) |
-| `JUKEBOX_FIXED_NAMES` | Non | vide | CSV de noms/pseudos forcés pour les jukebox |
+| `JUKEBOX_TOKENS` | Non | vide | CSV de tokens jukebox. Vide = mode solo, sinon active le mode orchestrateur (minimum 3 tokens) |
+| `JUKEBOX_FIXED_NAMES` | Non | vide | CSV de pseudos forces pour les jukebox. Si vide, des noms humoristiques sont tires aleatoirement |
 | `POSTGRES_URL` | Non | `postgresql://quantum:quantum@localhost:5432/quantum_jukebox` | Connexion PostgreSQL |
 | `REDIS_URL` | Non | `redis://localhost:6379` | Connexion Redis |
-| `LAVALINK_HOST` | Non | `localhost` | Hôte Lavalink |
+| `LAVALINK_HOST` | Non | `localhost` | Hote Lavalink |
 | `LAVALINK_PORT` | Non | `2333` | Port Lavalink |
 | `LAVALINK_PASSWORD` | Non | `youshallnotpass` | Mot de passe Lavalink |
-| `YOUTUBE_OAUTH_ENABLED` | Non | `false` | Active OAuth youtube-plugin (recommandé en production) |
-| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Non | vide | Refresh token OAuth YouTube (optionnel au premier démarrage) |
+| `LAVALINK_SECURE` | Non | `false` | Active `wss/https` vers Lavalink |
+| `YOUTUBE_OAUTH_ENABLED` | Non | `false` | Active OAuth youtube-plugin (recommande en production) |
+| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Non | vide | Refresh token OAuth YouTube (optionnel au premier demarrage) |
 | `YOUTUBE_OAUTH_SKIP_INITIALIZATION` | Non | `false` | Skip de l'init OAuth auto au boot Lavalink |
-| `MUSIC_CONTROL_CHANNEL_ID` | Non | vide | Salon texte dédié au Command Center musique |
-| `MAX_TRACKS_PER_PLAYLIST` | Non | `101` | Plafonné automatiquement à `101` |
-| `DJ_ROLE_IDS` | Non | vide | IDs de rôles DJ autorisés (CSV) |
-| `COMMAND_CENTER_ROLE_IDS` | Non | vide | IDs de rôles autorisés à gérer le Command Center |
+| `MUSIC_CONTROL_CHANNEL_ID` | Non | vide | Salon texte dedie au Command Center musique |
+| `DJ_ROLE_IDS` | Non | vide | IDs de roles DJ autorises (CSV) |
+| `COMMAND_CENTER_ROLE_IDS` | Non | vide | IDs de roles autorises a gerer le Command Center (slash + boutons) |
+| `MAX_CUSTOM_PLAYLISTS` | Non | `50` | Nombre maximum de playlists custom par serveur |
+| `MAX_TRACKS_PER_PLAYLIST` | Non | `101` | Plafonne automatiquement les imports/sauvegardes a `101` |
+| `DEFAULT_VOLUME` | Non | `80` | Volume par defaut |
+| `PLAYER_EMPTY_TIMEOUT_MS` | Non | `300000` | Timeout avant deconnexion auto d'un player vide |
+| `PLAYER_SELF_DEAF` | Non | `true` | Active l'auto-deafen du bot en vocal |
+| `AUTOPLAY_DEFAULT` | Non | `false` | Valeur par defaut du mode autoplay |
+| `STAY_IN_VOICE_DEFAULT` | Non | `false` | Valeur par defaut du mode 24/7 |
+| `SPOTIFY_CLIENT_ID` | Non | vide | Client ID Spotify pour LavaSrc |
+| `SPOTIFY_CLIENT_SECRET` | Non | vide | Client Secret Spotify pour LavaSrc |
 
 ## Commandes utilisateur
+
+- `/ping`
 
 ### Lecture
 
@@ -130,10 +156,15 @@ flowchart LR
 - `/autoplay [enabled]`
 - `/mode247 [enabled]`
 
-### Panel
+### Command Center
 
-Le panel legacy est remplace par un `Command Center` global et des panels de session par jukebox.
-Le `Command Center` vit dans le salon configure via `MUSIC_CONTROL_CHANNEL_ID`.
+Le panel legacy n'est plus utilise.
+`/panel` pilote maintenant le `Command Center` global.
+
+- Si `MUSIC_CONTROL_CHANNEL_ID` est configure, le bot maintient automatiquement un message global dans ce salon.
+- Des messages de session par jukebox sont egalement maintenus pour les lectures actives.
+- Les memes actions sont disponibles via les boutons du `Command Center`.
+- Les roles filtres par `COMMAND_CENTER_ROLE_IDS` controlent l'acces a ces actions.
 
 - `/panel refresh`
 - `/panel rebuild`
@@ -154,27 +185,36 @@ Le `Command Center` vit dans le salon configure via `MUSIC_CONTROL_CHANNEL_ID`.
 ## Contrat fonctionnel
 
 - Recherche texte: **YouTube prioritaire**.
-- Spotify: accepté via **liens directs** (métadonnées résolues par Lavalink/LavaSrc).
-- Import playlist: max `101` pistes par opération.
-- Sources non supportées: erreur explicite, en français.
+- Spotify: accepte via **liens directs** (metadonnees resolues par Lavalink/LavaSrc).
+- Import playlist: max `101` pistes par operation.
+- Sources non supportees: erreur explicite, en francais.
 - Routing vocal: **1 jukebox max par salon vocal** et **1 salon max par jukebox**.
-- Binding: un jukebox reste attaché au salon jusqu'à déconnexion.
+- Binding: un jukebox reste attache au salon jusqu'a deconnexion.
 - Allocation: **premier jukebox libre**.
+- Saturation: si tous les jukebox sont occupes, l'orchestrateur renvoie une alerte explicite.
+- Reprise: un failover best-effort tente de basculer vers un autre jukebox en cas de panne runtime.
 
 ## Exploitation
 
-### Monter à plusieurs réplicas (mode bot unique)
+### Monter a plusieurs replicas (mode bot unique, haute disponibilite)
 
 ```bash
 docker compose up -d --scale bot=3
 ```
 
+Important:
+
+- ce mode ne fournit pas plusieurs bots vocaux,
+- il renforce seulement la disponibilite d'un bot unique partageant le meme token.
+
 ### Mode orchestrateur + 3 jukebox
 
-1. Créer/inviter 4 applications Discord (1 orchestrateur + 3 jukebox) sur le même serveur.
+1. Creer et inviter 4 applications Discord sur le meme serveur (1 orchestrateur + 3 jukebox minimum).
 2. Renseigner:
    - `DISCORD_TOKEN` / `DISCORD_CLIENT_ID` pour l'orchestrateur
-   - `JUKEBOX_TOKENS=token_1,token_2,token_3`
+   - `JUKEBOX_TOKENS=token_1,token_2,token_3` (minimum 3)
+   - `JUKEBOX_FIXED_NAMES=nom_1,nom_2,nom_3` si tu veux forcer les pseudos
+   - `MUSIC_CONTROL_CHANNEL_ID` si tu veux activer le Command Center persistant
 3. Lancer normalement:
 
 ```bash
@@ -182,8 +222,11 @@ docker compose up -d --build
 ```
 
 Important:
+
 - les jukebox doivent etre presents sur le serveur (`guildCount > 0` dans les logs),
-- les commandes slash restent publiees uniquement par l'orchestrateur.
+- les commandes slash restent publiees uniquement par l'orchestrateur,
+- les jukebox n'exposent pas de slash commands et servent uniquement au voice runtime,
+- donne `Manage Nicknames` + une hierarchie de role correcte si tu veux autoriser le renommage automatique.
 
 ### Logs live
 
@@ -191,14 +234,20 @@ Important:
 docker compose logs -f bot
 ```
 
-### Rebuild après mise à jour
+Signaux utiles dans les logs:
+
+- `Mode orchestrateur actif: routing channel-bound vers pool jukebox`
+- `Noeud Lavalink connecte`
+- `Failover jukebox applique apres erreur`
+
+### Rebuild apres mise a jour
 
 ```bash
 docker compose down
 docker compose up -d --build
 ```
 
-## Développement local
+## Developpement local
 
 ```bash
 npm install
@@ -207,27 +256,39 @@ npm run build
 npm run dev
 ```
 
-## Dépannage rapide
+## Depannage rapide
 
 ### `DiscordAPIError[50001]: Missing Access`
 
 Causes typiques:
 
-- bot non présent dans le serveur cible
+- bot non present dans le serveur cible
 - mauvais `DISCORD_GUILD_ID`
 - permissions/scopes OAuth2 Discord incomplets
 
+### `DiscordAPIError[50013]: Missing Permissions`
+
+Causes typiques:
+
+- l'orchestrateur n'a pas assez de droits pour renommer un jukebox (`setNickname`)
+- le role du bot est trop bas dans la hierarchie
+
+Impact:
+
+- non bloquant pour la lecture
+- les pseudos automatiques des jukebox peuvent ne pas s'appliquer
+
 ### Erreur PostgreSQL/Redis au tout premier boot
 
-Le bot peut démarrer avant les dépendances. Avec `restart: unless-stopped`, il repart automatiquement dès que Postgres/Redis répondent.
+Le bot peut demarrer avant les dependances. Avec `restart: unless-stopped`, il repart automatiquement des que Postgres/Redis repondent.
 
-### Lecture YouTube annoncée mais sans son
+### Lecture YouTube annoncee mais sans son
 
 Si Lavalink remonte `Sign in to confirm you're not a bot` ou des erreurs de codec non audio:
 
 - activer `YOUTUBE_OAUTH_ENABLED=true`
 - injecter ensuite `YOUTUBE_OAUTH_REFRESH_TOKEN` (persistant)
-- redémarrer la stack (`docker compose down && docker compose up -d --build`)
+- redemarrer la stack (`docker compose down && docker compose up -d --build`)
 - valider avec la lecture Discord standard (`/play`), pas via un endpoint REST `youtube/stream`
 
 ## Arborescence utile
@@ -238,7 +299,8 @@ src/
   config/                    lecture et validation de la config env
   core/                      client Discord + orchestration
   modules/infrastructure/    PostgreSQL + Redis locks
-  modules/music/             playback, panel, settings, lavalink
+  modules/music/             playback, command center, settings, lavalink
+  modules/orchestrator/      allocation channel-bound et pool jukebox
   modules/playlists/         playlists custom
-  modules/providers/         résolution des providers (YouTube/Spotify)
+  modules/providers/         resolution des providers (YouTube/Spotify)
 ```
