@@ -193,6 +193,17 @@ export class LavalinkService {
         "Erreur de piste"
       );
     });
+
+    this.manager.on("trackEnd", (player, track, payload) => {
+      this.logger.info(
+        {
+          guildId: player.guildId,
+          title: track?.info.title,
+          reason: payload.reason
+        },
+        "Piste terminee"
+      );
+    });
   }
 }
 

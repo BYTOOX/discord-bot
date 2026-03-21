@@ -143,8 +143,24 @@ export class MusicControlSurfaceService {
       if (this.host.config.musicControlChannelId) {
         const message = await this.ensureCommandCenterMessage(guildId, options.forceRebuild === true);
         if (message) {
-          await message.edit(this.buildCommandCenterPayload(guildId, status));
-          updated = true;
+          const payload = this.buildCommandCenterPayload(guildId, status);
+          const editResult = await this.editManagedMessage(message, payload, {
+            scope: "command-center",
+            guildId
+          });
+          if (editResult === "ok") {
+            updated = true;
+          } else {
+            this.commandCenterMessages.delete(guildId);
+            const rebuilt = await this.ensureCommandCenterMessage(guildId, true);
+            if (rebuilt) {
+              const rebuildResult = await this.editManagedMessage(rebuilt, payload, {
+                scope: "command-center-rebuild",
+                guildId
+              });
+              updated = rebuildResult === "ok";
+            }
+          }
         }
       }
 
@@ -311,7 +327,25 @@ export class MusicControlSurfaceService {
     }
 
     this.cancelSessionDeletion(key);
-    await message.edit(this.buildSessionPayload(snapshot, status));
+    const editResult = await this.editManagedMessage(
+      message,
+      this.buildSessionPayload(snapshot, status),
+      {
+        scope: "session-panel",
+        guildId: snapshot.guildId,
+        slotId: snapshot.slotId
+      }
+    );
+
+    if (editResult === "missing") {
+      const created = await channel.send(this.buildSessionPayload(snapshot, status));
+      const managed = this.asManagedMessage(created);
+      this.sessionPanels.set(key, {
+        channelId: channel.id,
+        messageId: managed.id,
+        deleteTimer: null
+      });
+    }
   }
 
   private async scheduleSessionRemoval(key: string, reason: string): Promise<void> {
@@ -325,7 +359,18 @@ export class MusicControlSurfaceService {
     const channel = await this.fetchGuildTextChannel(existing.channelId);
     const message = channel ? await this.fetchMessage(channel, existing.messageId) : null;
     if (message) {
-      await message.edit(this.buildSessionClosedPayload(reason));
+      const editResult = await this.editManagedMessage(
+        message,
+        this.buildSessionClosedPayload(reason),
+        {
+          scope: "session-close",
+          key
+        }
+      );
+      if (editResult === "missing") {
+        this.sessionPanels.delete(key);
+        return;
+      }
     }
 
     const deleteTimer = setTimeout(() => {
@@ -947,6 +992,58 @@ export class MusicControlSurfaceService {
     delete(): Promise<unknown>;
   }): ManagedMessage {
     return value;
+  }
+
+  private async editManagedMessage(
+    message: ManagedMessage,
+    payload: unknown,
+    context: Record<string, unknown>
+  ): Promise<"ok" | "missing"> {
+    try {
+      await message.edit(payload);
+      return "ok";
+    } catch (error) {
+      if (this.isUnknownMessageError(error)) {
+        this.logger.warn(
+          { ...context, channelId: message.channelId, messageId: message.id, err: error },
+          "Message Discord introuvable pendant mise a jour surface"
+        );
+        return "missing";
+      }
+
+      throw error;
+    }
+  }
+
+  private isUnknownMessageError(error: unknown): boolean {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    const candidate = error as {
+      code?: unknown;
+      status?: unknown;
+      message?: unknown;
+      rawError?: { code?: unknown; message?: unknown } | null;
+    };
+
+    const errorCode = candidate.code ?? candidate.rawError?.code;
+    if (errorCode === 10008) {
+      return true;
+    }
+
+    const statusCode = candidate.status;
+    if (statusCode === 404) {
+      const messageText =
+        typeof candidate.message === "string"
+          ? candidate.message
+          : typeof candidate.rawError?.message === "string"
+            ? candidate.rawError.message
+            : "";
+      return messageText.toLowerCase().includes("unknown message");
+    }
+
+    return false;
   }
 
   private getGuild(guildId: string): Guild | null {

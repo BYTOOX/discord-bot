@@ -183,7 +183,17 @@ export class QuantumClient extends Client {
 
     if (this.runtimeOptions.enableInteractions) {
       this.on(Events.InteractionCreate, (interaction: Interaction) => {
-        void this.handleInteraction(interaction);
+        void this.handleInteraction(interaction).catch((error) => {
+          this.logger.error(
+            {
+              err: error,
+              interactionId: interaction.id,
+              interactionType: interaction.type,
+              guildId: interaction.guildId
+            },
+            "Echec traitement interaction"
+          );
+        });
       });
     }
 
@@ -197,15 +207,34 @@ export class QuantumClient extends Client {
 
     if (this.runtimeOptions.enablePlaybackRuntime && this.runtimeOptions.role !== "jukebox") {
       this.lavalinkService.manager.on("trackStart", (player) => {
-        void this.refreshRegisteredMusicPanel(player.guildId, "Lecture mise a jour.");
+        void this.refreshRegisteredMusicPanel(player.guildId, "Lecture mise a jour.").catch(
+          (error) => {
+            this.logger.warn(
+              { err: error, guildId: player.guildId },
+              "Echec refresh command center apres trackStart"
+            );
+          }
+        );
       });
 
       this.lavalinkService.manager.on("queueEnd", (player) => {
-        void this.refreshRegisteredMusicPanel(player.guildId, "File terminee.");
+        void this.refreshRegisteredMusicPanel(player.guildId, "File terminee.").catch((error) => {
+          this.logger.warn(
+            { err: error, guildId: player.guildId },
+            "Echec refresh command center apres queueEnd"
+          );
+        });
       });
 
       this.lavalinkService.manager.on("playerDestroy", (player) => {
-        void this.refreshRegisteredMusicPanel(player.guildId, "Player deconnecte.");
+        void this.refreshRegisteredMusicPanel(player.guildId, "Player deconnecte.").catch(
+          (error) => {
+            this.logger.warn(
+              { err: error, guildId: player.guildId },
+              "Echec refresh command center apres playerDestroy"
+            );
+          }
+        );
       });
     }
 
