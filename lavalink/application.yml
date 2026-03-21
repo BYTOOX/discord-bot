@@ -31,7 +31,8 @@ plugins:
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
     remoteCipher:
-      url: "http://yt-cipher:8001/"
+      url: "${YOUTUBE_REMOTE_CIPHER_URL:https://cipher.kikkia.dev/}"
+      userAgent: "${YOUTUBE_REMOTE_CIPHER_USER_AGENT:quantum-jukebox}"
     oauth:
       enabled: ${YOUTUBE_OAUTH_ENABLED:false}
       refreshToken: "${YOUTUBE_OAUTH_REFRESH_TOKEN:}"

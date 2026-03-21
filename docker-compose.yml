@@ -37,11 +37,9 @@ services:
       - redis_data:/data
 
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4.1.2
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
     container_name: quantum-lavalink
     restart: unless-stopped
-    depends_on:
-      - yt-cipher
     ports:
       - "2333:2333"
     environment:
@@ -55,13 +53,6 @@ services:
       YOUTUBE_OAUTH_SKIP_INITIALIZATION: ${YOUTUBE_OAUTH_SKIP_INITIALIZATION:-false}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml
-
-  yt-cipher:
-    image: ghcr.io/kikkia/yt-cipher:master
-    container_name: quantum-yt-cipher
-    restart: unless-stopped
-    environment:
-      IGNORE_SCRIPT_REGION: "true"
 
 volumes:
   postgres_data:

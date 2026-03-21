@@ -79,7 +79,7 @@ flowchart LR
     J1 --> L[Lavalink v4\nyoutube-plugin + lavasrc]
     J2 --> L
     J3 --> L
-    L --> C[yt-cipher]
+    L --> C[remoteCipher\n(public ou self-hosted)]
 ```
 
 ## Modes de runtime
@@ -121,6 +121,8 @@ flowchart LR
 | `YOUTUBE_OAUTH_ENABLED` | Non | `false` | Active OAuth youtube-plugin (recommande en production) |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN` | Non | vide | Refresh token OAuth YouTube (optionnel au premier demarrage) |
 | `YOUTUBE_OAUTH_SKIP_INITIALIZATION` | Non | `false` | Skip de l'init OAuth auto au boot Lavalink |
+| `YOUTUBE_REMOTE_CIPHER_URL` | Non | `https://cipher.kikkia.dev/` | Endpoint remote cipher YouTube |
+| `YOUTUBE_REMOTE_CIPHER_USER_AGENT` | Non | `quantum-jukebox` | User-Agent envoye au remote cipher |
 | `MUSIC_CONTROL_CHANNEL_ID` | Non | vide | Salon texte dedie au Command Center musique |
 | `DJ_ROLE_IDS` | Non | vide | IDs de roles DJ autorises (CSV) |
 | `COMMAND_CENTER_ROLE_IDS` | Non | vide | IDs de roles autorises a gerer le Command Center (slash + boutons) |
@@ -268,6 +270,17 @@ Impact:
 ### Erreur PostgreSQL/Redis au tout premier boot
 
 Le bot peut demarrer avant les dependances. Avec `restart: unless-stopped`, il repart automatiquement des que Postgres/Redis repondent.
+
+### `exec /app/server: exec format error` sur `yt-cipher`
+
+Cause typique:
+
+- image `ghcr.io/kikkia/yt-cipher:master` publiee avec un binaire `/app/server` invalide
+
+Resolution:
+
+- basculer sur `remoteCipher` via `YOUTUBE_REMOTE_CIPHER_URL` (defaut: `https://cipher.kikkia.dev/`)
+- supprimer le service `yt-cipher` local de la stack le temps qu'un tag image sain soit republie
 
 ### Lecture YouTube annoncee mais sans son
 
