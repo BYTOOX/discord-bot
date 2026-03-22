@@ -401,7 +401,7 @@ export class MusicService {
         await player.setVolume(volume);
         await this.guildSettings.setVolume(guildId, volume);
         return {
-          message: `Volume baisse a ${volume}%.`,
+          message: `🔉 Volume baisse a ${volume}%.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -411,7 +411,7 @@ export class MusicService {
         await player.setVolume(volume);
         await this.guildSettings.setVolume(guildId, volume);
         return {
-          message: `Volume monte a ${volume}%.`,
+          message: `🔊 Volume monte a ${volume}%.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -419,11 +419,11 @@ export class MusicService {
       case PANEL_BUTTONS.pauseToggle: {
         if (player.paused) {
           await player.resume();
-          return { message: "Lecture reprise.", state: await this.getPanelState(guildId) };
+          return { message: "▶️ Lecture reprise.", state: await this.getPanelState(guildId) };
         }
 
         await player.pause();
-        return { message: "Lecture en pause.", state: await this.getPanelState(guildId) };
+        return { message: "⏸️ Lecture en pause.", state: await this.getPanelState(guildId) };
       }
 
       case PANEL_BUTTONS.skip: {
@@ -434,7 +434,7 @@ export class MusicService {
         if (player.queue.tracks.length === 0) {
           await player.stopPlaying(false, false);
           return {
-            message: "Piste passee. La file est maintenant vide.",
+            message: "⏭️ Piste passee. La file est maintenant vide.",
             state: await this.getPanelState(guildId)
           };
         }
@@ -443,12 +443,12 @@ export class MusicService {
         const nowPlaying = player.queue.current;
         if (!nowPlaying) {
           return {
-            message: "Piste passee. La file est maintenant vide.",
+            message: "⏭️ Piste passee. La file est maintenant vide.",
             state: await this.getPanelState(guildId)
           };
         }
         return {
-          message: `Piste passee. En cours: ${displayTrack(nowPlaying)}.`,
+          message: `⏭️ Piste passee. En cours: ${displayTrack(nowPlaying)}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -461,14 +461,14 @@ export class MusicService {
 
         await player.play({ clientTrack: previous });
         return {
-          message: `Retour sur: ${displayTrack(previous)}.`,
+          message: `⏮️ Retour sur: ${displayTrack(previous)}.`,
           state: await this.getPanelState(guildId)
         };
       }
 
       case PANEL_BUTTONS.shuffle: {
         await player.queue.shuffle();
-        return { message: "File melangee.", state: await this.getPanelState(guildId) };
+        return { message: "🔀 File melangee.", state: await this.getPanelState(guildId) };
       }
 
       case PANEL_BUTTONS.loop: {
@@ -480,7 +480,7 @@ export class MusicService {
           queue: "file"
         };
         return {
-          message: `Boucle ${labels[nextMode]}.`,
+          message: `🔁 Boucle ${labels[nextMode]}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -488,7 +488,7 @@ export class MusicService {
       case PANEL_BUTTONS.autoplay: {
         const result = await this.setAutoplay(guildId);
         return {
-          message: `Lecture auto ${result.enabled ? "activee" : "desactivee"}.`,
+          message: `✨ Lecture auto ${result.enabled ? "activee" : "desactivee"}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -505,17 +505,17 @@ export class MusicService {
         const queue = this.getQueueSummary(guildId, 6);
         if (!queue.current && queue.upcoming.length === 0) {
           return {
-            message: "La file d'attente est vide.",
+            message: "📭 La file d'attente est vide.",
             state: await this.getPanelState(guildId)
           };
         }
 
         const lines: string[] = [];
         if (queue.current) {
-          lines.push(`En cours: ${queue.current}`);
+          lines.push(`🎵 En cours: ${queue.current}`);
         }
         if (queue.upcoming.length > 0) {
-          lines.push("A suivre:");
+          lines.push("⏭️ A suivre:");
           lines.push(...queue.upcoming);
         }
 
@@ -528,10 +528,10 @@ export class MusicService {
 
         if (!settings.stayInVoice) {
           await player.destroy("Arret via panneau");
-          return { message: "Lecture arretee et bot deconnecte.", disablePanel: true };
+          return { message: "⏹️ Lecture arretee et bot deconnecte.", disablePanel: true };
         }
 
-        return { message: "Lecture arretee et file videe.", state: await this.getPanelState(guildId) };
+        return { message: "⏹️ Lecture arretee et file videe.", state: await this.getPanelState(guildId) };
       }
 
       default:
@@ -578,7 +578,7 @@ export class MusicService {
 
         this.voteSkipByGuild.delete(guildId);
         return {
-          message: `Jump sur: ${displayTrack(target)}.`,
+          message: `🎯 Jump sur: ${displayTrack(target)}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -593,7 +593,7 @@ export class MusicService {
 
         await this.applyPanelFilter(player, selected);
         return {
-          message: `Filtre applique: ${this.formatFilterLabel(selected)}.`,
+          message: `🎚️ Filtre applique: ${this.formatFilterLabel(selected)}.`,
           state: await this.getPanelState(guildId)
         };
       }
@@ -819,12 +819,12 @@ export class MusicService {
     const playbackLabel = player.paused ? "Pause" : player.playing ? "Lecture" : "Pret";
 
     return [
-      `Etat: ${playbackLabel}`,
-      `Boucle: ${repeatLabel}`,
-      `Autoplay: ${settings.autoplay ? "ON" : "OFF"}`,
-      `Mode 24/7: ${settings.stayInVoice ? "ON" : "OFF"}`,
-      `Filtre: ${this.getActiveFilterLabel(player.guildId)}`,
-      `Volume: ${player.volume}%`
+      `🎛️ Etat: ${playbackLabel}`,
+      `🔁 Boucle: ${repeatLabel}`,
+      `✨ Autoplay: ${settings.autoplay ? "ON" : "OFF"}`,
+      `🌙 Mode 24/7: ${settings.stayInVoice ? "ON" : "OFF"}`,
+      `🎚️ Filtre: ${this.getActiveFilterLabel(player.guildId)}`,
+      `🔊 Volume: ${player.volume}%`
     ].join("\n");
   }
 
@@ -832,24 +832,24 @@ export class MusicService {
     const lines: string[] = [];
 
     if (player.queue.current) {
-      lines.push(`Now: ${this.formatPanelTrackLine(player.queue.current)}`);
+      lines.push(`🎵 Now: ${this.formatPanelTrackLine(player.queue.current)}`);
     }
 
     const preview = player.queue.tracks
       .slice(0, previewCount)
       .map((track, index) => `${index + 1}. ${this.formatPanelTrackLine(track)}`);
     if (preview.length > 0) {
-      lines.push("A suivre:");
+      lines.push("⏭️ A suivre:");
       lines.push(...preview);
     }
 
     const remaining = player.queue.tracks.length - preview.length;
     if (remaining > 0) {
-      lines.push(`... +${remaining} piste(s)`);
+      lines.push(`➕ ... +${remaining} piste(s)`);
     }
 
     if (lines.length === 0) {
-      return "File vide pour le moment.";
+      return "📭 File vide pour le moment.";
     }
 
     return this.truncateForEmbedField(lines.join("\n"), 1024);
@@ -870,17 +870,17 @@ export class MusicService {
     const remainingLabel = hasUnknownDuration && knownDurationMs > 0 ? `${remaining} + stream` : remaining;
 
     return [
-      `Etat: ${healthLabel}`,
-      `Pistes en attente: ${queueSize}`,
-      `Temps restant: ${remainingLabel}`,
-      `Erreurs recentes: ${recentError ? "oui" : "non"}`
+      `🩺 Etat: ${healthLabel}`,
+      `📦 Pistes en attente: ${queueSize}`,
+      `⏳ Temps restant: ${remainingLabel}`,
+      `⚠️ Erreurs recentes: ${recentError ? "oui" : "non"}`
     ].join("\n");
   }
 
   private buildPanelSessionInfo(guildId: string): string {
     const session = this.sessionByGuild.get(guildId);
     if (!session) {
-      return "Session en attente.\nLance une piste pour demarrer le suivi.";
+      return "🫧 Session en attente.\nLance une piste pour demarrer le suivi.";
     }
 
     const elapsedMs = Math.max(0, Date.now() - session.startedAt);
@@ -888,19 +888,19 @@ export class MusicService {
     const lastTrack = session.recentTracks.at(-1);
 
     const lines = [
-      `Ouverte: ${formatDuration(elapsedMs)}`,
-      `Pistes jouees: ${session.tracksPlayed}`,
-      `Temps ecoute: ${formatDuration(Math.max(1, session.totalDurationMs))}`
+      `🕒 Ouverte: ${formatDuration(elapsedMs)}`,
+      `🎶 Pistes jouees: ${session.tracksPlayed}`,
+      `⌛ Temps ecoute: ${formatDuration(Math.max(1, session.totalDurationMs))}`
     ];
 
     if (topRequester) {
-      lines.push(`Top demandeur: <@${topRequester.id}> (${topRequester.count})`);
+      lines.push(`👑 Top demandeur: <@${topRequester.id}> (${topRequester.count})`);
     } else {
-      lines.push("Top demandeur: n/a");
+      lines.push("👑 Top demandeur: n/a");
     }
 
     if (lastTrack) {
-      lines.push(`Derniere: ${this.truncateForEmbedField(`${lastTrack.title} - ${lastTrack.author}`, 110)}`);
+      lines.push(`🧾 Derniere: ${this.truncateForEmbedField(`${lastTrack.title} - ${lastTrack.author}`, 110)}`);
     }
 
     return lines.join("\n");
@@ -909,7 +909,7 @@ export class MusicService {
   private buildPanelVoteSkipInfo(player: Player): string {
     const current = player.queue.current;
     if (!current) {
-      return "Aucune piste active.";
+      return "🎧 Aucune piste active.";
     }
 
     const voteState = this.getVoteStateForPlayer(player);
@@ -922,9 +922,9 @@ export class MusicService {
         : "Aucun vote pour le moment.";
 
     return [
-      `Progression: ${votes}/${requiredVotes}`,
-      `Seuil: ${requiredVotes} vote(s)`,
-      `Votants: ${voterList}`
+      `🗳️ Progression: ${votes}/${requiredVotes}`,
+      `🎯 Seuil: ${requiredVotes} vote(s)`,
+      `👥 Votants: ${voterList}`
     ].join("\n");
   }
 

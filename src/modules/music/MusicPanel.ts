@@ -65,7 +65,7 @@ export function buildMusicPanel(
   disableControls = false
 ): MusicPanelRender {
   const provider = formatProvider(display.sourceName);
-  const playback = display.isPaused ? "PAUSE" : display.isPlaying ? "LIVE" : "IDLE";
+  const playback = display.isPaused ? "⏸️ PAUSE" : display.isPlaying ? "🔴 LIVE" : "🌙 IDLE";
   const progressBar = buildProgressBar(display.trackPositionMs, display.trackDurationMs, PROGRESS_BAR_SIZE);
 
   const title = display.trackUrl
@@ -75,10 +75,10 @@ export function buildMusicPanel(
   const heroText = [
     `## ${normalizeEmoji(emoji)} Quantum Neural Deck`,
     title,
-    `**${provider}** • **${playback}** • demandé par ${display.requestedById ? `<@${display.requestedById}>` : "n/a"}`,
+    `**${getProviderEmoji(display.sourceName)} ${provider}** • **${playback}** • 🎧 demandé par ${display.requestedById ? `<@${display.requestedById}>` : "n/a"}`,
     "",
     `${inlineCode(progressBar)}  ${formatDuration(display.trackPositionMs)} / ${formatDuration(display.trackDurationMs)}`,
-    `> ${escapeMarkdown(display.trackAuthor)}`
+    `> 🎤 ${escapeMarkdown(display.trackAuthor)}`
   ].join("\n");
 
   const modeLines = normalizeMultiline(display.modeInfo).map((line) => `- ${escapeMarkdown(line)}`);
@@ -101,7 +101,7 @@ export function buildMusicPanel(
         : {
             type: ComponentType.Button,
             style: ButtonStyle.Secondary,
-            label: "No artwork",
+            label: "🖼️ Pas de cover",
             customId: `${PANEL_PREFIX}:artwork_placeholder`,
             disabled: true
           },
@@ -114,7 +114,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Telemetrie\n${modeLines.join("\n")}`
+      content: `### 📡 Telemetrie\n${modeLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -123,7 +123,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### File Active\n${queueLines.join("\n")}`
+      content: `### 🎶 File Active\n${queueLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -132,7 +132,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Integrite\n${healthLines.join("\n")}`
+      content: `### 🛡️ Integrite\n${healthLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -141,7 +141,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Session\n${sessionLines.join("\n")}`
+      content: `### 🧠 Session\n${sessionLines.join("\n")}`
     },
     {
       type: ComponentType.Separator,
@@ -150,7 +150,7 @@ export function buildMusicPanel(
     },
     {
       type: ComponentType.TextDisplay,
-      content: `### Vote Skip\n${voteLines.join("\n")}`
+      content: `### 🗳️ Vote Skip\n${voteLines.join("\n")}`
     },
     {
       type: ComponentType.TextDisplay,
@@ -189,24 +189,24 @@ export function buildPanelComponents(
   state: PanelState,
   disabled = false
 ): ActionRowBuilder<ButtonBuilder>[] {
-  const pauseLabel = state.paused ? "Reprendre" : "Pause";
+  const pauseLabel = state.paused ? "▶️ Reprendre" : "⏸️ Pause";
   const loopLabel =
     state.repeatMode === "off"
-      ? "Loop:Off"
+      ? "🔁 Loop:Off"
       : state.repeatMode === "track"
-        ? "Loop:1"
-        : "Loop:All";
-  const autoplayLabel = state.autoplay ? "Auto:On" : "Auto:Off";
+        ? "🔂 Loop:1"
+        : "🔁 Loop:All";
+  const autoplayLabel = state.autoplay ? "✨ Auto:On" : "💤 Auto:Off";
 
   const rowOne = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeDown)
-      .setLabel("Vol-")
+      .setLabel("🔉 Vol-")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.previous)
-      .setLabel("Retour")
+      .setLabel("⏮️ Retour")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
@@ -216,12 +216,12 @@ export function buildPanelComponents(
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.skip)
-      .setLabel("Skip")
+      .setLabel("⏭️ Skip")
       .setStyle(ButtonStyle.Primary)
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.volumeUp)
-      .setLabel("Vol+")
+      .setLabel("🔊 Vol+")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -233,7 +233,7 @@ export function buildPanelComponents(
   const rowTwo = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.shuffle)
-      .setLabel("Shuffle")
+      .setLabel("🔀 Shuffle")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
@@ -243,7 +243,7 @@ export function buildPanelComponents(
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.stop)
-      .setLabel("Stop")
+      .setLabel("⏹️ Stop")
       .setStyle(ButtonStyle.Danger)
       .setDisabled(disabled),
     new ButtonBuilder()
@@ -253,7 +253,7 @@ export function buildPanelComponents(
       .setDisabled(disabled),
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.voteSkip)
-      .setLabel("Vote")
+      .setLabel("🗳️ Vote")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -261,7 +261,7 @@ export function buildPanelComponents(
   const rowThree = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTONS.playlist)
-      .setLabel("Apercu file")
+      .setLabel("📜 Apercu file")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled)
   );
@@ -325,7 +325,7 @@ function buildJumpRow(
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(PANEL_SELECTS.jump)
-    .setPlaceholder("Jump instantane dans la file")
+    .setPlaceholder("⏭️ Jump instantane dans la file")
     .addOptions(options)
     .setDisabled(disabled);
 
@@ -335,30 +335,30 @@ function buildJumpRow(
 function buildFilterRow(disabled: boolean): ActionRowBuilder<StringSelectMenuBuilder> | null {
   const select = new StringSelectMenuBuilder()
     .setCustomId(PANEL_SELECTS.filter)
-    .setPlaceholder("Filtre DJ")
+    .setPlaceholder("🎚️ Filtre DJ")
     .addOptions(
       {
-        label: "Reset",
+        label: "🫧 Reset",
         value: "reset",
         description: "Supprime tous les filtres"
       },
       {
-        label: "Nightcore",
+        label: "⚡ Nightcore",
         value: "nightcore",
         description: "Pitch et vitesse plus nerveux"
       },
       {
-        label: "Vaporwave",
+        label: "🌊 Vaporwave",
         value: "vaporwave",
         description: "Rendu ralenti et plus doux"
       },
       {
-        label: "Bassboost",
+        label: "🫨 Bassboost",
         value: "bassboost",
         description: "Renforce les basses"
       },
       {
-        label: "Rock",
+        label: "🎸 Rock",
         value: "rock",
         description: "EQ plus incisif"
       }
@@ -370,7 +370,7 @@ function buildFilterRow(disabled: boolean): ActionRowBuilder<StringSelectMenuBui
 
 function buildProgressBar(positionMs: number, durationMs: number, size: number): string {
   if (durationMs <= 0) {
-    return "•".repeat(size);
+    return "·".repeat(size);
   }
 
   const ratio = Math.max(0, Math.min(1, positionMs / Math.max(durationMs, 1)));
@@ -379,11 +379,11 @@ function buildProgressBar(positionMs: number, durationMs: number, size: number):
 
   for (let index = 0; index < size; index += 1) {
     if (index === cursor) {
-      bar += "?";
+      bar += "◉";
       continue;
     }
 
-    bar += index < cursor ? "-" : "·";
+    bar += index < cursor ? "─" : "·";
   }
 
   return bar;
@@ -391,7 +391,7 @@ function buildProgressBar(positionMs: number, durationMs: number, size: number):
 
 function normalizeEmoji(value: string): string {
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "??";
+  return trimmed.length > 0 ? trimmed : "🎛️";
 }
 
 function formatProvider(sourceName: string): string {
@@ -433,10 +433,23 @@ function buildFooterText(status?: string): string {
   });
 
   if (status && status.trim().length > 0) {
-    return `Neural Deck • ${status.trim().slice(0, 180)} • ${timestamp}`;
+    return `✨ Neural Deck • ${status.trim().slice(0, 180)} • ${timestamp}`;
   }
 
-  return `Neural Deck • Synchronisation live • ${timestamp}`;
+  return `✨ Neural Deck • Synchronisation live • ${timestamp}`;
+}
+
+function getProviderEmoji(sourceName: string): string {
+  const source = sourceName.trim().toLowerCase();
+  if (source.includes("spotify")) {
+    return "🟢";
+  }
+
+  if (source.includes("youtube")) {
+    return "🔴";
+  }
+
+  return "🎵";
 }
 
 function normalizeMultiline(value: string): string[] {
