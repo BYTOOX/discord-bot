@@ -3,6 +3,7 @@ import { Pool as PgPool } from "pg";
 import type { Logger } from "pino";
 
 export class PostgresService {
+  private static readonly SCHEMA_INIT_LOCK_ID = 2147483001;
   private readonly pool: Pool;
 
   public constructor(
@@ -23,7 +24,10 @@ export class PostgresService {
 
   public async initialize(): Promise<void> {
     await this.query("SELECT 1");
-    await this.ensureSchema();
+    await this.runInTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock($1)", [PostgresService.SCHEMA_INIT_LOCK_ID]);
+      await this.ensureSchema(client);
+    });
     this.logger.info("PostgreSQL initialise");
   }
 
@@ -54,8 +58,8 @@ export class PostgresService {
     }
   }
 
-  private async ensureSchema(): Promise<void> {
-    await this.query(`
+  private async ensureSchema(client: Pick<PoolClient, "query">): Promise<void> {
+    await client.query(`
       CREATE TABLE IF NOT EXISTS guild_settings (
         guild_id TEXT PRIMARY KEY,
         autoplay BOOLEAN NOT NULL,
@@ -65,12 +69,23 @@ export class PostgresService {
       )
     `);
 
-    await this.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS music_panels (
         guild_id TEXT PRIMARY KEY,
         channel_id TEXT NOT NULL,
         message_id TEXT NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS music_session_panels (
+        guild_id TEXT NOT NULL,
+        slot_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (guild_id, slot_id)
       )
     `);
   }

@@ -6,14 +6,21 @@ import {
   MessageFlags,
   type ButtonInteraction,
   type Guild,
-  type GuildTextBasedChannel
+  type GuildTextBasedChannel,
+  type Message,
+  type StringSelectMenuInteraction
 } from "discord.js";
 import type { Logger } from "pino";
 
 import type { AppConfig } from "../../config/env";
 import type { AccessPolicyService } from "../policies/AccessPolicyService";
+import { PANEL_BUTTONS, PANEL_SELECTS, buildMusicPanel } from "./MusicPanel";
+import type { PanelState } from "./MusicPanel";
 import type { MusicService } from "./MusicService";
+import type { PanelRegistryService } from "./PanelRegistryService";
+import type { SessionPanelRegistryService } from "./SessionPanelRegistryService";
 import { displayTrack, formatDuration } from "./trackHelpers";
+import type { MusicPanelDisplay } from "./types";
 
 const COMMAND_CENTER_PREFIX = "command_center";
 const CLEANUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -40,6 +47,9 @@ export const COMMAND_CENTER_BUTTONS = {
   rebuild: `${COMMAND_CENTER_PREFIX}:rebuild`,
   clean: `${COMMAND_CENTER_PREFIX}:clean`
 } as const;
+
+const PUBLIC_PANEL_BUTTONS = new Set<string>([PANEL_BUTTONS.voteSkip, PANEL_BUTTONS.playlist]);
+const PUBLIC_PANEL_SELECTS = new Set<string>([PANEL_SELECTS.jump]);
 
 export interface JukeboxSlotSnapshot {
   slotId: string;
@@ -73,6 +83,14 @@ export interface JukeboxSessionSnapshot {
 export interface ControlSurfaceCoordinator {
   getSlotSnapshots(guildId: string): JukeboxSlotSnapshot[];
   getSessionSnapshots(guildId: string): JukeboxSessionSnapshot[];
+  getPanelStateForSession(guildId: string, slotId: string): Promise<PanelState>;
+  getPanelDisplayForSession(guildId: string, slotId: string): Promise<MusicPanelDisplay | null>;
+  handlePanelAction(
+    interaction: ButtonInteraction
+  ): Promise<{ message: string; state?: PanelState; disablePanel?: boolean }>;
+  handlePanelSelectAction(
+    interaction: StringSelectMenuInteraction
+  ): Promise<{ message: string; state?: PanelState }>;
 }
 
 interface SurfaceHost {
@@ -80,6 +98,11 @@ interface SurfaceHost {
   logger: Logger;
   accessPolicy: AccessPolicyService;
   musicService: MusicService;
+  panelRegistryService: PanelRegistryService;
+  sessionPanelRegistryService: SessionPanelRegistryService;
+  user: {
+    id: string;
+  } | null;
   channels: {
     fetch(id: string): Promise<unknown>;
   };
@@ -96,6 +119,17 @@ interface MessageRef {
 
 interface SessionPanelRef extends MessageRef {
   deleteTimer: NodeJS.Timeout | null;
+  lastRender: SessionPanelRenderSnapshot | null;
+}
+
+interface SessionPanelRenderSnapshot {
+  display: MusicPanelDisplay;
+  state: PanelState;
+}
+
+interface SessionPayloadBuild {
+  payload: unknown;
+  lastRender: SessionPanelRenderSnapshot | null;
 }
 
 type ManagedMessage = {
@@ -127,8 +161,7 @@ export class MusicControlSurfaceService {
       return;
     }
 
-    await this.cleanCommandCenterChannel(guildId);
-    await this.refreshGuild(guildId, "Command center online.", { forceRebuild: true });
+    await this.refreshGuild(guildId, "Command center online.");
     this.scheduleCleanup(guildId);
   }
 
@@ -191,6 +224,7 @@ export class MusicControlSurfaceService {
   }
 
   public async forceRebuild(guildId: string): Promise<boolean> {
+    await this.deleteKnownCommandCenterMessages(guildId);
     this.commandCenterMessages.delete(guildId);
     return this.refreshGuild(guildId, "Command center reconstruit.", { forceRebuild: true });
   }
@@ -203,10 +237,30 @@ export class MusicControlSurfaceService {
   }
 
   public async handleButtonInteraction(interaction: ButtonInteraction): Promise<boolean> {
-    if (!Object.values(COMMAND_CENTER_BUTTONS).includes(interaction.customId as never)) {
+    if (Object.values(COMMAND_CENTER_BUTTONS).includes(interaction.customId as never)) {
+      return this.handleCommandCenterButtonInteraction(interaction);
+    }
+
+    if (!Object.values(PANEL_BUTTONS).includes(interaction.customId as never)) {
       return false;
     }
 
+    return this.handleMusicPanelButtonInteraction(interaction);
+  }
+
+  public async handleStringSelectInteraction(
+    interaction: StringSelectMenuInteraction
+  ): Promise<boolean> {
+    if (!Object.values(PANEL_SELECTS).includes(interaction.customId as never)) {
+      return false;
+    }
+
+    return this.handleMusicPanelSelectInteraction(interaction);
+  }
+
+  private async handleCommandCenterButtonInteraction(
+    interaction: ButtonInteraction
+  ): Promise<boolean> {
     if (!interaction.guild) {
       await interaction.reply({
         content: "Cette action ne fonctionne que sur un serveur.",
@@ -253,13 +307,101 @@ export class MusicControlSurfaceService {
       case COMMAND_CENTER_BUTTONS.clean:
         await this.cleanNow(guildId);
         await interaction.followUp({
-          content: "Canal musique nettoye.",
+          content: "Canal musique recycle.",
           flags: MessageFlags.Ephemeral
         });
         return true;
       default:
         return false;
     }
+  }
+
+  private async handleMusicPanelButtonInteraction(
+    interaction: ButtonInteraction
+  ): Promise<boolean> {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "Ce panneau ne fonctionne que sur un serveur.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (this.panelInteractionRequiresDj(interaction.customId) &&
+        !this.host.accessPolicy.canManagePlayback(member)) {
+      await interaction.reply({
+        content: "Il faut un role DJ ou la permission Gerer le serveur pour ce controle.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await interaction.reply({
+        content: "Impossible de determiner le serveur cible.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    await interaction.deferUpdate();
+    const result = await this.getPanelController().handlePanelAction(interaction);
+    await this.refreshGuild(guildId, result.message);
+    await interaction.followUp({
+      content: result.message,
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  private async handleMusicPanelSelectInteraction(
+    interaction: StringSelectMenuInteraction
+  ): Promise<boolean> {
+    if (!interaction.guild) {
+      await interaction.reply({
+        content: "Ce panneau ne fonctionne que sur un serveur.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (this.panelInteractionRequiresDj(interaction.customId) &&
+        !this.host.accessPolicy.canManagePlayback(member)) {
+      await interaction.reply({
+        content: "Il faut un role DJ ou la permission Gerer le serveur pour ce controle.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await interaction.reply({
+        content: "Impossible de determiner le serveur cible.",
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    await interaction.deferUpdate();
+    const result = await this.getPanelController().handlePanelSelectAction(interaction);
+    await this.refreshGuild(guildId, result.message);
+    await interaction.followUp({
+      content: result.message,
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  private panelInteractionRequiresDj(customId: string): boolean {
+    if (PUBLIC_PANEL_BUTTONS.has(customId) || PUBLIC_PANEL_SELECTS.has(customId)) {
+      return false;
+    }
+
+    return true;
   }
 
   private async ensureCommandCenterMessage(
@@ -277,6 +419,10 @@ export class MusicControlSurfaceService {
       return null;
     }
 
+    if (forceRebuild) {
+      await this.deleteKnownCommandCenterMessages(guildId, channel);
+    }
+
     if (!forceRebuild) {
       const existing = this.commandCenterMessages.get(guildId);
       if (existing && existing.channelId === channel.id) {
@@ -285,11 +431,31 @@ export class MusicControlSurfaceService {
           return resolved;
         }
       }
+
+       const registered = await this.host.panelRegistryService.get(guildId);
+       if (registered && registered.channelId === channel.id) {
+         const resolved = await this.fetchMessage(channel, registered.messageId);
+         if (resolved) {
+           this.commandCenterMessages.set(guildId, {
+             channelId: registered.channelId,
+             messageId: registered.messageId
+           });
+           return resolved;
+         }
+
+         this.host.panelRegistryService.reportInvalid(
+           guildId,
+           registered.channelId,
+           registered.messageId
+         );
+         await this.host.panelRegistryService.clear(guildId);
+       }
     }
 
     const message = await channel.send(this.buildCommandCenterPayload(guildId, "Boot sync."));
     const managed = this.asManagedMessage(message);
-    this.commandCenterMessages.set(guildId, { channelId: channel.id, messageId: managed.id });
+    await this.rememberCommandCenterMessage(guildId, channel.id, managed.id);
+    await this.deleteDuplicateCommandCenterMessages(channel, managed.id);
     return managed;
   }
 
@@ -315,21 +481,28 @@ export class MusicControlSurfaceService {
     }
 
     if (!message) {
-      const created = await channel.send(this.buildSessionPayload(snapshot, status));
+      message = await this.resolveRegisteredSessionPanel(snapshot, channel);
+    }
+
+    if (!message) {
+      message = await this.recoverSessionPanelMessage(snapshot, channel);
+    }
+
+    const build = await this.buildSessionPayload(snapshot, status);
+
+    if (!message) {
+      const created = await channel.send(build.payload as never);
       const managed = this.asManagedMessage(created);
       this.cancelSessionDeletion(key);
-      this.sessionPanels.set(key, {
-        channelId: channel.id,
-        messageId: managed.id,
-        deleteTimer: null
-      });
+      await this.rememberSessionPanelMessage(snapshot, managed, build.lastRender);
+      await this.deleteDuplicateSessionPanelMessages(channel, snapshot, managed.id);
       return;
     }
 
     this.cancelSessionDeletion(key);
     const editResult = await this.editManagedMessage(
       message,
-      this.buildSessionPayload(snapshot, status),
+      build.payload,
       {
         scope: "session-panel",
         guildId: snapshot.guildId,
@@ -337,14 +510,17 @@ export class MusicControlSurfaceService {
       }
     );
 
+    if (editResult === "ok") {
+      await this.rememberSessionPanelMessage(snapshot, message, build.lastRender);
+      return;
+    }
+
     if (editResult === "missing") {
-      const created = await channel.send(this.buildSessionPayload(snapshot, status));
+      await this.host.sessionPanelRegistryService.clear(snapshot.guildId, snapshot.slotId);
+      const created = await channel.send(build.payload as never);
       const managed = this.asManagedMessage(created);
-      this.sessionPanels.set(key, {
-        channelId: channel.id,
-        messageId: managed.id,
-        deleteTimer: null
-      });
+      await this.rememberSessionPanelMessage(snapshot, managed, build.lastRender);
+      await this.deleteDuplicateSessionPanelMessages(channel, snapshot, managed.id);
     }
   }
 
@@ -355,13 +531,23 @@ export class MusicControlSurfaceService {
     }
 
     this.cancelSessionDeletion(key);
+    await this.clearSessionPanelRegistration(key);
 
     const channel = await this.fetchGuildTextChannel(existing.channelId);
     const message = channel ? await this.fetchMessage(channel, existing.messageId) : null;
     if (message) {
+      const closedPayload = existing.lastRender
+        ? buildMusicPanel(
+            existing.lastRender.display,
+            this.host.config.musicPanelEmoji,
+            existing.lastRender.state,
+            reason,
+            true
+          )
+        : this.buildSessionClosedPayload(reason);
       const editResult = await this.editManagedMessage(
         message,
-        this.buildSessionClosedPayload(reason),
+        closedPayload,
         {
           scope: "session-close",
           key
@@ -410,6 +596,7 @@ export class MusicControlSurfaceService {
     }
 
     this.sessionPanels.delete(key);
+    await this.clearSessionPanelRegistration(key);
   }
 
   private async cleanCommandCenterChannel(guildId: string): Promise<void> {
@@ -423,22 +610,330 @@ export class MusicControlSurfaceService {
       return;
     }
 
-    while (true) {
-      const batch = await channel.messages.fetch({ limit: 100 });
-      if (batch.size === 0) {
-        break;
-      }
+    await this.deleteKnownCommandCenterMessages(guildId, channel);
+    this.commandCenterMessages.delete(guildId);
+    await this.host.panelRegistryService.clear(guildId);
+  }
 
-      await Promise.allSettled(
-        batch.map((message) => message.delete().catch(() => null))
-      );
+  private getPanelController(): Pick<
+    MusicService | ControlSurfaceCoordinator,
+    "handlePanelAction" | "handlePanelSelectAction"
+  > {
+    return this.coordinator ?? this.host.musicService;
+  }
 
-      if (batch.size < 100) {
-        break;
+  private async rememberCommandCenterMessage(
+    guildId: string,
+    channelId: string,
+    messageId: string
+  ): Promise<void> {
+    this.commandCenterMessages.set(guildId, { channelId, messageId });
+    await this.host.panelRegistryService.set(guildId, channelId, messageId);
+  }
+
+  private async deleteKnownCommandCenterMessages(
+    guildId: string,
+    channel?: GuildTextBasedChannel
+  ): Promise<void> {
+    const resolvedChannel =
+      channel ??
+      (this.host.config.musicControlChannelId
+        ? await this.fetchGuildTextChannel(this.host.config.musicControlChannelId)
+        : null);
+
+    const inMemory = this.commandCenterMessages.get(guildId);
+    if (resolvedChannel && inMemory) {
+      const existing = await this.fetchMessage(resolvedChannel, inMemory.messageId);
+      if (existing) {
+        await existing.delete().catch(() => null);
       }
     }
 
+    const registered = await this.host.panelRegistryService.get(guildId);
+    if (resolvedChannel && registered && registered.channelId === resolvedChannel.id) {
+      const existing = await this.fetchMessage(resolvedChannel, registered.messageId);
+      if (existing) {
+        await existing.delete().catch(() => null);
+      }
+    }
+
+    if (resolvedChannel) {
+      await this.deleteDuplicateCommandCenterMessages(resolvedChannel);
+    }
+
     this.commandCenterMessages.delete(guildId);
+    await this.host.panelRegistryService.clear(guildId);
+  }
+
+  private async deleteDuplicateCommandCenterMessages(
+    channel: GuildTextBasedChannel,
+    keepMessageId?: string
+  ): Promise<void> {
+    const batch = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    if (!batch) {
+      return;
+    }
+
+    const duplicates = batch.filter((message) => {
+      if (keepMessageId && message.id === keepMessageId) {
+        return false;
+      }
+
+      return this.isCommandCenterMessage(message);
+    });
+
+    await Promise.allSettled(
+      duplicates.map((message) => message.delete().catch(() => null))
+    );
+  }
+
+  private async deleteDuplicateSessionPanelMessages(
+    channel: GuildTextBasedChannel,
+    snapshot: JukeboxSessionSnapshot,
+    keepMessageId?: string
+  ): Promise<void> {
+    const batch = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    if (!batch) {
+      return;
+    }
+
+    const duplicates = batch.filter((message) => {
+      if (keepMessageId && message.id === keepMessageId) {
+        return false;
+      }
+
+      return this.isSessionPanelMessage(message, snapshot);
+    });
+
+    await Promise.allSettled(duplicates.map((message) => message.delete().catch(() => null)));
+  }
+
+  private isCommandCenterMessage(message: Message): boolean {
+    if (message.author.id !== this.host.user?.id) {
+      return false;
+    }
+
+    return message.components.some((row) => {
+      if (!("components" in row) || !Array.isArray(row.components)) {
+        return false;
+      }
+
+      return row.components.some((component: { customId?: string | null }) =>
+        component.customId?.startsWith(`${COMMAND_CENTER_PREFIX}:`) ?? false
+      );
+    });
+  }
+
+  private isSessionPanelMessage(message: Message, snapshot: JukeboxSessionSnapshot): boolean {
+    if (message.author.id !== this.host.user?.id) {
+      return false;
+    }
+
+    if (this.isCommandCenterMessage(message)) {
+      return false;
+    }
+
+    const hasMusicPanelControls = message.components.some((row) => {
+      if (!("components" in row) || !Array.isArray(row.components)) {
+        return false;
+      }
+
+      return row.components.some((component: { customId?: string | null }) => {
+        const customId = component.customId;
+        if (!customId) {
+          return false;
+        }
+
+        return (
+          Object.values(PANEL_BUTTONS).includes(customId as never) ||
+          Object.values(PANEL_SELECTS).includes(customId as never)
+        );
+      });
+    });
+
+    if (hasMusicPanelControls) {
+      return true;
+    }
+
+    const embedTitles = message.embeds
+      .map((embed) => embed.title?.trim().toLowerCase() ?? "")
+      .filter((title) => title.length > 0);
+    const normalizedCallsign = snapshot.callsign.trim().toLowerCase();
+
+    return (
+      embedTitles.some((title) => title.includes("quantum neural deck")) ||
+      embedTitles.some((title) => title.includes("file d'attente")) ||
+      embedTitles.some((title) => normalizedCallsign.length > 0 && title.includes(normalizedCallsign))
+    );
+  }
+
+  private async resolveRegisteredSessionPanel(
+    snapshot: JukeboxSessionSnapshot,
+    channel: GuildTextBasedChannel
+  ): Promise<ManagedMessage | null> {
+    const registered = await this.host.sessionPanelRegistryService.get(
+      snapshot.guildId,
+      snapshot.slotId
+    );
+    if (!registered) {
+      return null;
+    }
+
+    if (registered.channelId !== channel.id) {
+      await this.host.sessionPanelRegistryService.clear(snapshot.guildId, snapshot.slotId);
+      return null;
+    }
+
+    const resolved = await this.fetchMessage(channel, registered.messageId);
+    if (resolved) {
+      this.sessionPanels.set(this.toSessionKey(snapshot.guildId, snapshot.slotId), {
+        channelId: registered.channelId,
+        messageId: registered.messageId,
+        deleteTimer: null,
+        lastRender: null
+      });
+      return resolved;
+    }
+
+    this.host.sessionPanelRegistryService.reportInvalid(
+      snapshot.guildId,
+      snapshot.slotId,
+      registered.channelId,
+      registered.messageId
+    );
+    await this.host.sessionPanelRegistryService.clear(snapshot.guildId, snapshot.slotId);
+    return null;
+  }
+
+  private async recoverSessionPanelMessage(
+    snapshot: JukeboxSessionSnapshot,
+    channel: GuildTextBasedChannel
+  ): Promise<ManagedMessage | null> {
+    const batch = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+    if (!batch) {
+      return null;
+    }
+
+    const recovered = [...batch.values()]
+      .filter((message) => this.isSessionPanelMessage(message, snapshot))
+      .sort((left, right) => right.createdTimestamp - left.createdTimestamp)[0];
+    if (!recovered) {
+      return null;
+    }
+
+    const managed = this.asManagedMessage(recovered);
+    await this.host.sessionPanelRegistryService.set(
+      snapshot.guildId,
+      snapshot.slotId,
+      channel.id,
+      managed.id
+    );
+    this.sessionPanels.set(this.toSessionKey(snapshot.guildId, snapshot.slotId), {
+      channelId: channel.id,
+      messageId: managed.id,
+      deleteTimer: null,
+      lastRender: null
+    });
+    this.logger.info(
+      {
+        guildId: snapshot.guildId,
+        slotId: snapshot.slotId,
+        channelId: channel.id,
+        messageId: managed.id
+      },
+      "Panneau de session recupere depuis le salon vocal"
+    );
+    return managed;
+  }
+
+  private async rememberSessionPanelMessage(
+    snapshot: JukeboxSessionSnapshot,
+    message: ManagedMessage,
+    lastRender: SessionPanelRenderSnapshot | null
+  ): Promise<void> {
+    const key = this.toSessionKey(snapshot.guildId, snapshot.slotId);
+    this.sessionPanels.set(key, {
+      channelId: message.channelId,
+      messageId: message.id,
+      deleteTimer: null,
+      lastRender
+    });
+    await this.host.sessionPanelRegistryService.set(
+      snapshot.guildId,
+      snapshot.slotId,
+      message.channelId,
+      message.id
+    );
+  }
+
+  private async clearSessionPanelRegistration(key: string): Promise<void> {
+    const { guildId, slotId } = this.parseSessionKey(key);
+    if (!guildId || !slotId) {
+      return;
+    }
+
+    await this.host.sessionPanelRegistryService.clear(guildId, slotId);
+  }
+
+  private async buildSessionPayload(
+    snapshot: JukeboxSessionSnapshot,
+    status?: string
+  ): Promise<SessionPayloadBuild> {
+    const panel = await this.resolveSessionPanelRender(snapshot, status);
+    if (panel) {
+      return panel;
+    }
+
+    return {
+      payload: this.buildLegacySessionPayload(snapshot, status),
+      lastRender: null
+    };
+  }
+
+  private async resolveSessionPanelRender(
+    snapshot: JukeboxSessionSnapshot,
+    status?: string
+  ): Promise<SessionPayloadBuild | null> {
+    const renderState = await this.resolveSessionPanelState(snapshot);
+    if (!renderState) {
+      return null;
+    }
+
+    return {
+      payload: buildMusicPanel(
+        renderState.display,
+        this.host.config.musicPanelEmoji,
+        renderState.state,
+        status
+      ),
+      lastRender: renderState
+    };
+  }
+
+  private async resolveSessionPanelState(
+    snapshot: JukeboxSessionSnapshot
+  ): Promise<SessionPanelRenderSnapshot | null> {
+    if (this.coordinator) {
+      const [display, state] = await Promise.all([
+        this.coordinator.getPanelDisplayForSession(snapshot.guildId, snapshot.slotId),
+        this.coordinator.getPanelStateForSession(snapshot.guildId, snapshot.slotId)
+      ]);
+      if (!display) {
+        return null;
+      }
+
+      return { display, state };
+    }
+
+    const [display, state] = await Promise.all([
+      this.host.musicService.getPanelDisplay(snapshot.guildId),
+      this.host.musicService.getPanelState(snapshot.guildId)
+    ]);
+    if (!display) {
+      return null;
+    }
+
+    return { display, state };
   }
 
   private scheduleCleanup(guildId: string): void {
@@ -592,7 +1087,7 @@ export class MusicControlSurfaceService {
     );
   }
 
-  private buildSessionPayload(snapshot: JukeboxSessionSnapshot, status?: string) {
+  private buildLegacySessionPayload(snapshot: JukeboxSessionSnapshot, status?: string) {
     const progress = this.buildProgressBar(snapshot.positionMs, snapshot.durationMs, 12);
     const sourceEmoji = this.getSourceEmoji(snapshot.sourceLabel);
     const title = snapshot.trackTitle
@@ -1052,5 +1547,17 @@ export class MusicControlSurfaceService {
 
   private toSessionKey(guildId: string, slotId: string): string {
     return `${guildId}:${slotId}`;
+  }
+
+  private parseSessionKey(key: string): { guildId: string; slotId: string } {
+    const separator = key.indexOf(":");
+    if (separator < 0) {
+      return { guildId: "", slotId: "" };
+    }
+
+    return {
+      guildId: key.slice(0, separator),
+      slotId: key.slice(separator + 1)
+    };
   }
 }

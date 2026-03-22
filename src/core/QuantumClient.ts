@@ -15,6 +15,8 @@ import { GuildSettingsService } from "../modules/music/GuildSettingsService";
 import { LavalinkService } from "../modules/music/LavalinkService";
 import { MusicControlSurfaceService } from "../modules/music/MusicControlSurfaceService";
 import { MusicService } from "../modules/music/MusicService";
+import { PanelRegistryService } from "../modules/music/PanelRegistryService";
+import { SessionPanelRegistryService } from "../modules/music/SessionPanelRegistryService";
 import { AccessPolicyService } from "../modules/policies/AccessPolicyService";
 import { ProviderResolver } from "../modules/providers/ProviderResolver";
 import { CommandRegistry } from "./CommandRegistry";
@@ -44,6 +46,8 @@ export class QuantumClient extends Client {
   public readonly providerResolver: ProviderResolver;
   public readonly lavalinkService: LavalinkService;
   public readonly musicService: MusicService;
+  public readonly panelRegistryService: PanelRegistryService;
+  public readonly sessionPanelRegistryService: SessionPanelRegistryService;
   public readonly musicControlSurface: MusicControlSurfaceService;
   public readonly runtimeOptions: Required<QuantumClientRuntimeOptions>;
   private eventHandlersBound = false;
@@ -86,6 +90,14 @@ export class QuantumClient extends Client {
       config.playerEmptyTimeoutMs,
       config.playerSelfDeaf,
       logger.child({ scope: "music" })
+    );
+    this.panelRegistryService = new PanelRegistryService(
+      this.postgresService,
+      logger.child({ scope: "panel-registry" })
+    );
+    this.sessionPanelRegistryService = new SessionPanelRegistryService(
+      this.postgresService,
+      logger.child({ scope: "session-panel-registry" })
     );
     this.musicControlSurface = new MusicControlSurfaceService(
       this,
@@ -250,7 +262,22 @@ export class QuantumClient extends Client {
 
     try {
       if (interaction.isButton()) {
-        await this.musicControlSurface.handleButtonInteraction(interaction);
+        try {
+          await this.musicControlSurface.handleButtonInteraction(interaction);
+        } catch (error) {
+          await this.replyWithInteractionError(interaction, error);
+          throw error;
+        }
+        return;
+      }
+
+      if (interaction.isStringSelectMenu()) {
+        try {
+          await this.musicControlSurface.handleStringSelectInteraction(interaction);
+        } catch (error) {
+          await this.replyWithInteractionError(interaction, error);
+          throw error;
+        }
         return;
       }
 
@@ -295,6 +322,28 @@ export class QuantumClient extends Client {
       await this.musicControlSurface.initializeForGuild(this.config.discordGuildId);
     } catch (error) {
       this.logger.error({ err: error }, "Echec initialisation command center");
+    }
+  }
+
+  private async replyWithInteractionError(interaction: Interaction, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : "Erreur d'interaction inattendue.";
+    const payload = {
+      content: `Erreur: ${message}`,
+      flags: MessageFlags.Ephemeral as const
+    };
+
+    if ("deferred" in interaction && interaction.deferred && !interaction.replied) {
+      await interaction.followUp(payload).catch(() => null);
+      return;
+    }
+
+    if ("replied" in interaction && interaction.replied) {
+      await interaction.followUp(payload).catch(() => null);
+      return;
+    }
+
+    if ("reply" in interaction && typeof interaction.reply === "function") {
+      await interaction.reply(payload).catch(() => null);
     }
   }
 }

@@ -30,7 +30,8 @@ export const PANEL_BUTTONS = {
 } as const;
 
 export const PANEL_SELECTS = {
-  jump: `${PANEL_PREFIX}:jump`
+  jump: `${PANEL_PREFIX}:jump`,
+  filter: `${PANEL_PREFIX}:filter`
 } as const;
 
 export type PanelAction = (typeof PANEL_BUTTONS)[keyof typeof PANEL_BUTTONS];
@@ -171,6 +172,11 @@ export function buildMusicPanel(
     if (jumpRow) {
       components.push(jumpRow);
     }
+  }
+
+  const filterRow = buildFilterRow(disableControls);
+  if (filterRow) {
+    components.push(filterRow);
   }
 
   return {
@@ -321,6 +327,42 @@ function buildJumpRow(
     .setCustomId(PANEL_SELECTS.jump)
     .setPlaceholder("Jump instantane dans la file")
     .addOptions(options)
+    .setDisabled(disabled);
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildFilterRow(disabled: boolean): ActionRowBuilder<StringSelectMenuBuilder> | null {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(PANEL_SELECTS.filter)
+    .setPlaceholder("Filtre DJ")
+    .addOptions(
+      {
+        label: "Reset",
+        value: "reset",
+        description: "Supprime tous les filtres"
+      },
+      {
+        label: "Nightcore",
+        value: "nightcore",
+        description: "Pitch et vitesse plus nerveux"
+      },
+      {
+        label: "Vaporwave",
+        value: "vaporwave",
+        description: "Rendu ralenti et plus doux"
+      },
+      {
+        label: "Bassboost",
+        value: "bassboost",
+        description: "Renforce les basses"
+      },
+      {
+        label: "Rock",
+        value: "rock",
+        description: "EQ plus incisif"
+      }
+    )
     .setDisabled(disabled);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);

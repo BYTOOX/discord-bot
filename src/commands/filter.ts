@@ -36,6 +36,9 @@ export const filterCommand: SlashCommand = {
       | "rock";
 
     await client.musicService.applyFilter(interaction, effect);
+    if (interaction.guildId) {
+      await client.refreshRegisteredMusicPanel(interaction.guildId, `Filtre applique: ${effect}.`);
+    }
     await sendReply(interaction, `Filtre applique: ${effect}.`);
   }
 };

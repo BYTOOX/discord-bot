@@ -35,6 +35,7 @@ const TRACK_ERROR_FORCE_ADVANCE_DELAY_MS = 4_000;
 const PANEL_JUMP_TARGET_LIMIT = 20;
 const SESSION_TRACK_HISTORY_LIMIT = 80;
 const VOTE_SKIP_RATIO = 0.6;
+type FilterEffect = "reset" | "nightcore" | "vaporwave" | "bassboost" | "rock";
 
 interface VoteSkipState {
   trackKey: string;
@@ -65,6 +66,7 @@ export class MusicService {
   private readonly recentTrackErrors = new Map<string, number>();
   private readonly voteSkipByGuild = new Map<string, VoteSkipState>();
   private readonly sessionByGuild = new Map<string, GuildSessionState>();
+  private readonly currentFilterByGuild = new Map<string, FilterEffect>();
 
   public constructor(
     private readonly lavalink: LavalinkService,
@@ -253,13 +255,15 @@ export class MusicService {
 
   public async applyFilter(
     interaction: ChatInputCommandInteraction,
-    effect: "reset" | "nightcore" | "vaporwave" | "bassboost" | "rock"
+    effect: FilterEffect
   ): Promise<void> {
     const player = await this.getRequiredPlayerInSameVoice(interaction);
+    await player.filterManager.resetFilters();
+    this.currentFilterByGuild.set(player.guildId, effect);
 
     switch (effect) {
       case "reset":
-        await player.filterManager.resetFilters();
+        this.currentFilterByGuild.set(player.guildId, "reset");
         return;
       case "nightcore":
         await player.filterManager.toggleNightcore();
@@ -579,6 +583,21 @@ export class MusicService {
         };
       }
 
+      case PANEL_SELECTS.filter: {
+        const selected = interaction.values[0] as
+          | FilterEffect
+          | undefined;
+        if (!selected) {
+          throw new Error("Aucun filtre selectionne.");
+        }
+
+        await this.applyPanelFilter(player, selected);
+        return {
+          message: `Filtre applique: ${this.formatFilterLabel(selected)}.`,
+          state: await this.getPanelState(guildId)
+        };
+      }
+
       default:
         throw new Error("Action select du panneau inconnue.");
     }
@@ -601,6 +620,7 @@ export class MusicService {
       this.clearPendingDestroy(player.guildId);
       this.recentTrackErrors.delete(player.guildId);
       this.voteSkipByGuild.delete(player.guildId);
+      this.currentFilterByGuild.delete(player.guildId);
     });
 
     this.lavalink.manager.on("queueEnd", (player, lastTrack) => {
@@ -803,6 +823,7 @@ export class MusicService {
       `Boucle: ${repeatLabel}`,
       `Autoplay: ${settings.autoplay ? "ON" : "OFF"}`,
       `Mode 24/7: ${settings.stayInVoice ? "ON" : "OFF"}`,
+      `Filtre: ${this.getActiveFilterLabel(player.guildId)}`,
       `Volume: ${player.volume}%`
     ].join("\n");
   }
@@ -996,6 +1017,57 @@ export class MusicService {
     return {
       message: `Vote valide (${requiredVotes}/${requiredVotes}). Nouvelle piste: ${displayTrack(nowPlaying)}.`
     };
+  }
+
+  private async applyPanelFilter(
+    player: Player,
+    effect: FilterEffect
+  ): Promise<void> {
+    await player.filterManager.resetFilters();
+    this.currentFilterByGuild.set(player.guildId, effect);
+
+    switch (effect) {
+      case "reset":
+        this.currentFilterByGuild.set(player.guildId, "reset");
+        return;
+      case "nightcore":
+        await player.filterManager.toggleNightcore();
+        return;
+      case "vaporwave":
+        await player.filterManager.toggleVaporwave();
+        return;
+      case "bassboost":
+        await player.filterManager.setEQPreset("BassboostMedium");
+        return;
+      case "rock":
+        await player.filterManager.setEQPreset("Rock");
+        return;
+      default:
+        throw new Error("Filtre non supporte.");
+    }
+  }
+
+  private getActiveFilterLabel(guildId: string): string {
+    return this.formatFilterLabel(this.currentFilterByGuild.get(guildId) ?? "reset");
+  }
+
+  private formatFilterLabel(
+    effect: FilterEffect
+  ): string {
+    switch (effect) {
+      case "reset":
+        return "Aucun";
+      case "nightcore":
+        return "Nightcore";
+      case "vaporwave":
+        return "Vaporwave";
+      case "bassboost":
+        return "Bassboost";
+      case "rock":
+        return "Rock";
+      default:
+        return "Aucun";
+    }
   }
 
   private getEligibleVoteCount(member: GuildMember): number {

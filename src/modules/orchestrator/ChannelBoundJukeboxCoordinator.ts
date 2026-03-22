@@ -1,4 +1,10 @@
-import { Events, type ChatInputCommandInteraction, type GuildMember } from "discord.js";
+import {
+  Events,
+  type ButtonInteraction,
+  type ChatInputCommandInteraction,
+  type GuildMember,
+  type StringSelectMenuInteraction
+} from "discord.js";
 import type { Player } from "lavalink-client";
 import type { Logger } from "pino";
 
@@ -36,8 +42,13 @@ interface JukeboxSlot {
 interface DelegationContext {
   assignment: ChannelAssignment;
   slot: JukeboxSlot;
-  slotInteraction: ChatInputCommandInteraction;
+  slotInteraction: RoutedInteraction;
 }
+
+type RoutedInteraction =
+  | ChatInputCommandInteraction
+  | ButtonInteraction
+  | StringSelectMenuInteraction;
 
 export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator {
   private readonly slots: JukeboxSlot[];
@@ -80,7 +91,11 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     return this.delegateWithFailover(
       interaction,
       { createIfMissing: true },
-      (context) => context.slot.client.musicService.enqueue(context.slotInteraction, input)
+      (context) =>
+        context.slot.client.musicService.enqueue(
+          context.slotInteraction as ChatInputCommandInteraction,
+          input
+        )
     );
   }
 
@@ -88,7 +103,10 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     return this.delegateWithFailover(
       interaction,
       { createIfMissing: false },
-      (context) => context.slot.client.musicService.skip(context.slotInteraction)
+      (context) =>
+        context.slot.client.musicService.skip(
+          context.slotInteraction as ChatInputCommandInteraction
+        )
     );
   }
 
@@ -97,7 +115,9 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       interaction,
       { createIfMissing: false, allowFailover: false },
       async (context) => {
-        await context.slot.client.musicService.stop(context.slotInteraction);
+        await context.slot.client.musicService.stop(
+          context.slotInteraction as ChatInputCommandInteraction
+        );
       }
     );
 
@@ -109,7 +129,9 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       interaction,
       { createIfMissing: false },
       async (context) => {
-        await context.slot.client.musicService.pause(context.slotInteraction);
+        await context.slot.client.musicService.pause(
+          context.slotInteraction as ChatInputCommandInteraction
+        );
       }
     );
   }
@@ -119,7 +141,9 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       interaction,
       { createIfMissing: false },
       async (context) => {
-        await context.slot.client.musicService.resume(context.slotInteraction);
+        await context.slot.client.musicService.resume(
+          context.slotInteraction as ChatInputCommandInteraction
+        );
       }
     );
   }
@@ -129,7 +153,9 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       interaction,
       { createIfMissing: false, allowFailover: false },
       async (context) => {
-        await context.slot.client.musicService.leave(context.slotInteraction);
+        await context.slot.client.musicService.leave(
+          context.slotInteraction as ChatInputCommandInteraction
+        );
       }
     );
 
@@ -143,7 +169,11 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     return this.delegateWithFailover(
       interaction,
       { createIfMissing: false },
-      (context) => context.slot.client.musicService.setVolume(context.slotInteraction, volume)
+      (context) =>
+        context.slot.client.musicService.setVolume(
+          context.slotInteraction as ChatInputCommandInteraction,
+          volume
+        )
     );
   }
 
@@ -169,7 +199,10 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       interaction,
       { createIfMissing: false },
       async (context) => {
-        await context.slot.client.musicService.applyFilter(context.slotInteraction, effect);
+        await context.slot.client.musicService.applyFilter(
+          context.slotInteraction as ChatInputCommandInteraction,
+          effect
+        );
       }
     );
   }
@@ -321,29 +354,49 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     return snapshots;
   }
 
-  public getPanelState(_guildId: string): Promise<PanelState> {
-    return Promise.resolve({
-      paused: false,
-      autoplay: false,
-      repeatMode: "off",
-      hasPrevious: false
-    });
+  public async getPanelStateForSession(guildId: string, slotId: string): Promise<PanelState> {
+    const slot = this.findSlot(slotId);
+    if (!slot) {
+      throw new Error("Jukebox introuvable pour ce panneau.");
+    }
+
+    return slot.client.musicService.getPanelState(guildId);
   }
 
-  public getPanelDisplay(_guildId: string): Promise<MusicPanelDisplay | null> {
-    return Promise.resolve(null);
+  public async getPanelDisplayForSession(
+    guildId: string,
+    slotId: string
+  ): Promise<MusicPanelDisplay | null> {
+    const slot = this.findSlot(slotId);
+    if (!slot) {
+      return null;
+    }
+
+    return slot.client.musicService.getPanelDisplay(guildId);
   }
 
   public getPlayer(_guildId: string): Player | undefined {
     return undefined;
   }
 
-  public handlePanelAction(): Promise<{ message: string; state?: PanelState; disablePanel?: boolean }> {
-    throw new Error("Le panneau est desactive en mode orchestrateur multi-jukebox.");
+  public async handlePanelAction(
+    interaction: ButtonInteraction
+  ): Promise<{ message: string; state?: PanelState; disablePanel?: boolean }> {
+    return this.delegatePanelWithFailover(interaction, async (context) =>
+      context.slot.client.musicService.handlePanelAction(
+        context.slotInteraction as ButtonInteraction
+      )
+    );
   }
 
-  public handlePanelSelectAction(): Promise<{ message: string; state?: PanelState }> {
-    throw new Error("Le panneau est desactive en mode orchestrateur multi-jukebox.");
+  public async handlePanelSelectAction(
+    interaction: StringSelectMenuInteraction
+  ): Promise<{ message: string; state?: PanelState }> {
+    return this.delegatePanelWithFailover(interaction, async (context) =>
+      context.slot.client.musicService.handlePanelSelectAction(
+        context.slotInteraction as StringSelectMenuInteraction
+      )
+    );
   }
 
   private async delegateWithFailover<T>(
@@ -380,9 +433,41 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     }
   }
 
+  private async delegatePanelWithFailover<T>(
+    interaction: ButtonInteraction | StringSelectMenuInteraction,
+    executor: (context: DelegationContext) => Promise<T>
+  ): Promise<T> {
+    const context = await this.resolvePanelDelegationContext(interaction);
+
+    try {
+      return await executor(context);
+    } catch (error) {
+      if (!this.isRecoverableError(error)) {
+        throw error;
+      }
+
+      const fallback = await this.tryFailover(context, interaction);
+      if (!fallback) {
+        throw error;
+      }
+
+      this.logger.warn(
+        {
+          fromSlot: context.slot.id,
+          toSlot: fallback.slot.id,
+          guildId: fallback.assignment.guildId,
+          voiceChannelId: fallback.assignment.voiceChannelId
+        },
+        "Failover jukebox applique apres erreur de panneau"
+      );
+
+      return executor(fallback);
+    }
+  }
+
   private async tryFailover(
     context: DelegationContext,
-    interaction: ChatInputCommandInteraction
+    interaction: RoutedInteraction
   ): Promise<DelegationContext | null> {
     const replacement = this.findFirstOperationalSlot(
       [context.slot.id],
@@ -409,8 +494,35 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     };
   }
 
+  private async resolvePanelDelegationContext(
+    interaction: ButtonInteraction | StringSelectMenuInteraction
+  ): Promise<DelegationContext> {
+    if (!interaction.guildId || !interaction.guild) {
+      throw new Error("Ce panneau ne fonctionne que sur un serveur.");
+    }
+
+    const channelAssignment = this.assignmentsByChannel.get(
+      this.toChannelKey(interaction.guildId, interaction.channelId)
+    );
+    if (channelAssignment) {
+      const slot = this.findSlot(channelAssignment.slotId);
+      if (slot && this.isSlotOperational(slot)) {
+        channelAssignment.lastActionAt = Date.now();
+        channelAssignment.textChannelId = interaction.channelId;
+        const slotInteraction = await this.buildSlotInteraction(interaction, slot);
+        return {
+          assignment: channelAssignment,
+          slot,
+          slotInteraction
+        };
+      }
+    }
+
+    return this.resolveDelegationContext(interaction, false);
+  }
+
   private async resolveDelegationContext(
-    interaction: ChatInputCommandInteraction,
+    interaction: RoutedInteraction,
     createIfMissing: boolean
   ): Promise<DelegationContext> {
     const voice = await this.resolveRequesterVoice(interaction);
@@ -467,7 +579,7 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
   }
 
   private async resolveRequesterVoice(
-    interaction: ChatInputCommandInteraction
+    interaction: RoutedInteraction
   ): Promise<{ guildId: string; voiceChannelId: string } | null> {
     if (!interaction.guildId || !interaction.guild) {
       throw new Error("Cette commande ne fonctionne que sur un serveur.");
@@ -679,10 +791,10 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     return me?.voice.channelId ?? null;
   }
 
-  private async buildSlotInteraction(
-    interaction: ChatInputCommandInteraction,
+  private async buildSlotInteraction<TInteraction extends RoutedInteraction>(
+    interaction: TInteraction,
     slot: JukeboxSlot
-  ): Promise<ChatInputCommandInteraction> {
+  ): Promise<TInteraction> {
     if (!interaction.guildId) {
       throw new Error("Cette commande ne fonctionne que sur un serveur.");
     }
@@ -702,7 +814,7 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
 
         return Reflect.get(target, property, receiver);
       }
-    }) as ChatInputCommandInteraction;
+    }) as TInteraction;
   }
 
   private toChannelKey(guildId: string, voiceChannelId: string): string {
