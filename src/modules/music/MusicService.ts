@@ -72,6 +72,7 @@ export class MusicService {
     private readonly lavalink: LavalinkService,
     private readonly providers: ProviderResolver,
     private readonly guildSettings: GuildSettingsService,
+    private readonly spotifyConfigured: boolean,
     private readonly emptyDestroyTimeoutMs: number,
     private readonly selfDeaf: boolean,
     private readonly logger: Logger
@@ -116,12 +117,23 @@ export class MusicService {
     const player = await this.getOrCreatePlayer(interaction, voiceChannel, settings.volume);
     const resolution = this.providers.resolve(input);
 
+    if (resolution.provider === "spotify" && !this.spotifyConfigured) {
+      throw new Error(
+        "Les liens Spotify ne sont pas configures. Renseigne SPOTIFY_CLIENT_ID et SPOTIFY_CLIENT_SECRET, puis redemarre la stack."
+      );
+    }
+
     const result = await player.search(
       resolution.searchQuery,
       this.asRequester(interaction)
     );
 
     if (result.tracks.length === 0) {
+      if (resolution.provider === "spotify") {
+        throw new Error(
+          "Aucune piste resolue depuis Spotify. Verifie SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET puis consulte les logs Lavalink si besoin."
+        );
+      }
       throw new Error("Aucune musique trouvee pour cette recherche.");
     }
 
