@@ -1,6 +1,6 @@
 ﻿import type { ProviderResolution } from "./types";
 
-const SPOTIFY_REGEX = /(?:spotify\.com\/|spotify:)(?:track|playlist|album|artist)/i;
+const SPOTIFY_REGEX = /(?:spotify\.com\/(?:intl-[a-z]{2}\/)?|spotify:)(?:track|playlist|album|artist)/i;
 const YOUTUBE_REGEX = /(?:youtube\.com|youtu\.be)/i;
 const URL_REGEX = /^https?:\/\/\S+/i;
 const PLAYLIST_HINT_REGEX = /(playlist|album|list=)/i;
