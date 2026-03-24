@@ -42,6 +42,8 @@ services:
     image: ghcr.io/lavalink-devs/lavalink:4.2.2
     container_name: quantum-lavalink
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       _JAVA_OPTIONS: "-Xmx1G"
       SERVER_PORT: "2333"

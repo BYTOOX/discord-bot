@@ -61,18 +61,35 @@ interface GuildSessionState {
   recentTracks: SessionTrackRecord[];
 }
 
+interface SpotifyResolvedItem {
+  title: string;
+  author: string;
+  durationMs: number;
+  query: string;
+  url?: string;
+  artworkUrl?: string;
+}
+
+interface SpotifyResolvedCollection {
+  items: SpotifyResolvedItem[];
+  playlistName?: string;
+  isPlaylist: boolean;
+}
+
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
   private readonly recentTrackErrors = new Map<string, number>();
   private readonly voteSkipByGuild = new Map<string, VoteSkipState>();
   private readonly sessionByGuild = new Map<string, GuildSessionState>();
   private readonly currentFilterByGuild = new Map<string, FilterEffect>();
+  private spotifyTokenCache: { token: string; expiresAt: number } | null = null;
 
   public constructor(
     private readonly lavalink: LavalinkService,
     private readonly providers: ProviderResolver,
     private readonly guildSettings: GuildSettingsService,
-    private readonly spotifyConfigured: boolean,
+    private readonly spotifyClientId: string | null,
+    private readonly spotifyClientSecret: string | null,
     private readonly emptyDestroyTimeoutMs: number,
     private readonly selfDeaf: boolean,
     private readonly logger: Logger
@@ -116,8 +133,9 @@ export class MusicService {
     const settings = await this.guildSettings.get(interaction.guildId);
     const player = await this.getOrCreatePlayer(interaction, voiceChannel, settings.volume);
     const resolution = this.providers.resolve(input);
+    const requester = this.asRequester(interaction);
 
-    if (resolution.provider === "spotify" && !this.spotifyConfigured) {
+    if (resolution.provider === "spotify" && !this.isSpotifyConfigured()) {
       throw new Error(
         "Les liens Spotify ne sont pas configures. Renseigne SPOTIFY_CLIENT_ID et SPOTIFY_CLIENT_SECRET, puis redemarre la stack."
       );
@@ -125,14 +143,16 @@ export class MusicService {
 
     const result = await player.search(
       resolution.searchQuery,
-      this.asRequester(interaction)
+      requester
     );
 
     if (result.tracks.length === 0) {
       if (resolution.provider === "spotify") {
-        throw new Error(
-          "Aucune piste resolue depuis Spotify. Verifie SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET puis consulte les logs Lavalink si besoin."
-        );
+        const fallbackResult = await this.enqueueFromSpotifyMetadata(player, input, requester);
+        if (fallbackResult) {
+          return fallbackResult;
+        }
+        throw new Error("Aucune piste resolue depuis Spotify, meme via le fallback metadata.");
       }
       throw new Error("Aucune musique trouvee pour cette recherche.");
     }
@@ -1617,5 +1637,359 @@ export class MusicService {
     }
 
     return "off";
+  }
+
+  private isSpotifyConfigured(): boolean {
+    return this.spotifyClientId !== null && this.spotifyClientSecret !== null;
+  }
+
+  private async enqueueFromSpotifyMetadata(
+    player: Player,
+    input: string,
+    requester: { id: string; username: string }
+  ): Promise<EnqueueResult | null> {
+    const spotifyCollection = await this.loadSpotifyCollection(input);
+    if (!spotifyCollection || spotifyCollection.items.length === 0) {
+      return null;
+    }
+
+    const resolvedTracks: (Track | UnresolvedTrack)[] = [];
+    for (const item of spotifyCollection.items.slice(0, MAX_TRACKS_PER_IMPORT)) {
+      const search = await player.search(
+        {
+          query: item.query,
+          source: "ytsearch"
+        },
+        requester
+      );
+      const match = search.tracks[0];
+      if (match) {
+        resolvedTracks.push(match as Track | UnresolvedTrack);
+      }
+    }
+
+    if (resolvedTracks.length === 0) {
+      this.logger.warn({ input }, "Fallback Spotify metadata sans resultat YouTube");
+      return null;
+    }
+
+    const filteredTracks = this.filterDuplicateTracks(player, resolvedTracks);
+    if (filteredTracks.accepted.length === 0) {
+      throw new Error("Toutes les pistes detectees sont deja presentes dans la file.");
+    }
+
+    await player.queue.add(filteredTracks.accepted as Track[]);
+
+    if (!player.playing && !player.paused) {
+      await player.play();
+    }
+
+    const firstTrack = filteredTracks.accepted[0];
+    const enqueueResult: EnqueueResult = {
+      provider: "spotify",
+      addedCount: filteredTracks.accepted.length,
+      duplicateSkippedCount: filteredTracks.duplicateSkippedCount,
+      isPlaylist: spotifyCollection.isPlaylist,
+      firstTrackTitle: firstTrack?.info.title ?? spotifyCollection.items[0]?.title ?? "Titre inconnu",
+      firstTrackAuthor: firstTrack?.info.author ?? spotifyCollection.items[0]?.author ?? "Auteur inconnu",
+      firstTrackDurationMs: firstTrack?.info.duration ?? spotifyCollection.items[0]?.durationMs ?? 0
+    };
+
+    if (spotifyCollection.playlistName) {
+      enqueueResult.playlistName = spotifyCollection.playlistName;
+    }
+
+    const firstTrackUrl = firstTrack?.info.uri ?? spotifyCollection.items[0]?.url;
+    if (firstTrackUrl) {
+      enqueueResult.firstTrackUrl = firstTrackUrl;
+    }
+
+    const firstTrackArtworkUrl = firstTrack?.info.artworkUrl ?? spotifyCollection.items[0]?.artworkUrl;
+    if (firstTrackArtworkUrl) {
+      enqueueResult.firstTrackArtworkUrl = firstTrackArtworkUrl;
+    }
+
+    this.logger.info(
+      {
+        input,
+        requestedCount: spotifyCollection.items.length,
+        resolvedCount: resolvedTracks.length,
+        addedCount: filteredTracks.accepted.length
+      },
+      "Fallback Spotify metadata utilise"
+    );
+
+    return enqueueResult;
+  }
+
+  private async loadSpotifyCollection(input: string): Promise<SpotifyResolvedCollection | null> {
+    const resource = this.parseSpotifyResource(input);
+    if (!resource) {
+      return null;
+    }
+
+    switch (resource.type) {
+      case "track":
+        return this.loadSpotifyTrack(resource.id);
+      case "album":
+        return this.loadSpotifyAlbum(resource.id);
+      case "playlist":
+        return this.loadSpotifyPlaylist(resource.id);
+      case "artist":
+        return this.loadSpotifyArtistTopTracks(resource.id);
+      default:
+        return null;
+    }
+  }
+
+  private parseSpotifyResource(
+    input: string
+  ): { type: "track" | "album" | "playlist" | "artist"; id: string } | null {
+    const trimmed = input.trim();
+    const uriMatch = trimmed.match(/^spotify:(track|album|playlist|artist):([A-Za-z0-9]+)$/i);
+    if (uriMatch?.[1] && uriMatch?.[2]) {
+      return {
+        type: uriMatch[1].toLowerCase() as "track" | "album" | "playlist" | "artist",
+        id: uriMatch[2]
+      };
+    }
+
+    try {
+      const parsed = new URL(trimmed);
+      const parts = parsed.pathname.split("/").filter((part) => part.length > 0);
+      const resourceIndex = parts.findIndex((part) =>
+        ["track", "album", "playlist", "artist"].includes(part.toLowerCase())
+      );
+      if (resourceIndex === -1) {
+        return null;
+      }
+
+      const type = parts[resourceIndex]?.toLowerCase();
+      const id = parts[resourceIndex + 1];
+      if (!type || !id) {
+        return null;
+      }
+
+      return {
+        type: type as "track" | "album" | "playlist" | "artist",
+        id
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async loadSpotifyTrack(id: string): Promise<SpotifyResolvedCollection> {
+    const track = await this.spotifyApiRequest<{
+      name: string;
+      duration_ms?: number;
+      external_urls?: { spotify?: string };
+      artists?: Array<{ name?: string }>;
+      album?: { images?: Array<{ url?: string }> };
+    }>(`https://api.spotify.com/v1/tracks/${id}`);
+
+    const item = this.toSpotifyResolvedItem({
+      name: track.name,
+      artists: track.artists,
+      durationMs: track.duration_ms,
+      url: track.external_urls?.spotify,
+      artworkUrl: track.album?.images?.[0]?.url
+    });
+
+    return { items: item ? [item] : [], isPlaylist: false };
+  }
+
+  private async loadSpotifyAlbum(id: string): Promise<SpotifyResolvedCollection> {
+    const album = await this.spotifyApiRequest<{
+      name: string;
+      images?: Array<{ url?: string }>;
+      tracks?: {
+        items?: Array<{
+          name: string;
+          duration_ms?: number;
+          external_urls?: { spotify?: string };
+          artists?: Array<{ name?: string }>;
+        }>;
+      };
+    }>(`https://api.spotify.com/v1/albums/${id}`);
+
+    const items = (album.tracks?.items ?? [])
+      .map((track) =>
+        this.toSpotifyResolvedItem({
+          name: track.name,
+          artists: track.artists,
+          durationMs: track.duration_ms,
+          url: track.external_urls?.spotify,
+          artworkUrl: album.images?.[0]?.url
+        })
+      )
+      .filter((item): item is SpotifyResolvedItem => item !== null);
+
+    return {
+      items,
+      playlistName: album.name,
+      isPlaylist: true
+    };
+  }
+
+  private async loadSpotifyPlaylist(id: string): Promise<SpotifyResolvedCollection> {
+    const playlist = await this.spotifyApiRequest<{
+      name: string;
+      tracks?: {
+        items?: Array<{
+          track?: {
+            name: string;
+            duration_ms?: number;
+            external_urls?: { spotify?: string };
+            artists?: Array<{ name?: string }>;
+            album?: { images?: Array<{ url?: string }> };
+          } | null;
+        }>;
+      };
+    }>(`https://api.spotify.com/v1/playlists/${id}`);
+
+    const items = (playlist.tracks?.items ?? [])
+      .map((entry) => {
+        const track = entry.track;
+        if (!track) {
+          return null;
+        }
+
+        return this.toSpotifyResolvedItem({
+          name: track.name,
+          artists: track.artists,
+          durationMs: track.duration_ms,
+          url: track.external_urls?.spotify,
+          artworkUrl: track.album?.images?.[0]?.url
+        });
+      })
+      .filter((item): item is SpotifyResolvedItem => item !== null);
+
+    return {
+      items,
+      playlistName: playlist.name,
+      isPlaylist: true
+    };
+  }
+
+  private async loadSpotifyArtistTopTracks(id: string): Promise<SpotifyResolvedCollection> {
+    const payload = await this.spotifyApiRequest<{
+      tracks?: Array<{
+        name: string;
+        duration_ms?: number;
+        external_urls?: { spotify?: string };
+        artists?: Array<{ name?: string }>;
+        album?: { images?: Array<{ url?: string }> };
+      }>;
+    }>(`https://api.spotify.com/v1/artists/${id}/top-tracks?market=US`);
+
+    const items = (payload.tracks ?? [])
+      .map((track) =>
+        this.toSpotifyResolvedItem({
+          name: track.name,
+          artists: track.artists,
+          durationMs: track.duration_ms,
+          url: track.external_urls?.spotify,
+          artworkUrl: track.album?.images?.[0]?.url
+        })
+      )
+      .filter((item): item is SpotifyResolvedItem => item !== null);
+
+    return {
+      items,
+      isPlaylist: true
+    };
+  }
+
+  private toSpotifyResolvedItem(input: {
+    name?: string;
+    artists?: Array<{ name?: string }> | undefined;
+    durationMs?: number | undefined;
+    url?: string | undefined;
+    artworkUrl?: string | undefined;
+  }): SpotifyResolvedItem | null {
+    const title = input.name?.trim();
+    const artists = (input.artists ?? [])
+      .map((artist) => artist.name?.trim() ?? "")
+      .filter((name) => name.length > 0);
+
+    if (!title || artists.length === 0) {
+      return null;
+    }
+
+    const item: SpotifyResolvedItem = {
+      title,
+      author: artists.join(", "),
+      durationMs: input.durationMs ?? 0,
+      query: `${title} ${artists.join(" ")}`.trim()
+    };
+
+    if (input.url) {
+      item.url = input.url;
+    }
+
+    if (input.artworkUrl) {
+      item.artworkUrl = input.artworkUrl;
+    }
+
+    return item;
+  }
+
+  private async spotifyApiRequest<T>(url: string): Promise<T> {
+    const token = await this.getSpotifyAccessToken();
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Spotify API indisponible (${response.status}): ${body.slice(0, 200)}`);
+    }
+
+    return (await response.json()) as T;
+  }
+
+  private async getSpotifyAccessToken(): Promise<string> {
+    if (!this.spotifyClientId || !this.spotifyClientSecret) {
+      throw new Error("Credentials Spotify manquants.");
+    }
+
+    const now = Date.now();
+    if (this.spotifyTokenCache && this.spotifyTokenCache.expiresAt > now + 5_000) {
+      return this.spotifyTokenCache.token;
+    }
+
+    const basicAuth = Buffer.from(
+      `${this.spotifyClientId}:${this.spotifyClientSecret}`,
+      "utf8"
+    ).toString("base64");
+
+    const response = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: "grant_type=client_credentials"
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Echec token Spotify (${response.status}): ${body.slice(0, 200)}`);
+    }
+
+    const payload = (await response.json()) as {
+      access_token: string;
+      expires_in: number;
+    };
+
+    this.spotifyTokenCache = {
+      token: payload.access_token,
+      expiresAt: now + Math.max(60, payload.expires_in - 60) * 1000
+    };
+
+    return payload.access_token;
   }
 }
