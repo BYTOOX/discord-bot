@@ -112,9 +112,9 @@ flowchart LR
 | `DISCORD_GUILD_ID` | Oui | - | ID du serveur Discord cible |
 | `JUKEBOX_TOKENS` | Non | vide | CSV de tokens jukebox. Vide = mode solo, sinon active le mode orchestrateur (minimum 3 tokens) |
 | `JUKEBOX_FIXED_NAMES` | Non | vide | CSV de pseudos forces pour les jukebox. Si vide, des noms humoristiques sont tires aleatoirement |
-| `POSTGRES_URL` | Non | `postgresql://quantum:quantum@localhost:5432/quantum_jukebox` | Connexion PostgreSQL |
-| `REDIS_URL` | Non | `redis://localhost:6379` | Connexion Redis |
-| `LAVALINK_HOST` | Non | `localhost` | Hote Lavalink |
+| `POSTGRES_URL` | Non | `postgresql://quantum:quantum@postgres:5432/quantum_jukebox` | Connexion PostgreSQL sur le reseau Docker Compose |
+| `REDIS_URL` | Non | `redis://redis:6379` | Connexion Redis sur le reseau Docker Compose |
+| `LAVALINK_HOST` | Non | `lavalink` | Hote Lavalink sur le reseau Docker Compose |
 | `LAVALINK_PORT` | Non | `2333` | Port Lavalink |
 | `LAVALINK_PASSWORD` | Non | `youshallnotpass` | Mot de passe Lavalink |
 | `LAVALINK_SECURE` | Non | `false` | Active `wss/https` vers Lavalink |

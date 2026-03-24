@@ -12,6 +12,8 @@ services:
       LAVALINK_HOST: lavalink
       POSTGRES_URL: ${POSTGRES_URL:-postgresql://quantum:quantum@postgres:5432/quantum_jukebox}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    networks:
+      - backend
 
   postgres:
     image: postgres:16-alpine
@@ -21,27 +23,25 @@ services:
       POSTGRES_DB: quantum_jukebox
       POSTGRES_USER: quantum
       POSTGRES_PASSWORD: quantum
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
 
   redis:
     image: redis:7-alpine
     container_name: quantum-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - backend
 
   lavalink:
     image: ghcr.io/lavalink-devs/lavalink:4.2.2
     container_name: quantum-lavalink
     restart: unless-stopped
-    ports:
-      - "2333:2333"
     environment:
       _JAVA_OPTIONS: "-Xmx1G"
       SERVER_PORT: "2333"
@@ -53,8 +53,14 @@ services:
       YOUTUBE_OAUTH_SKIP_INITIALIZATION: ${YOUTUBE_OAUTH_SKIP_INITIALIZATION:-false}
     volumes:
       - ./lavalink/application.yml:/opt/Lavalink/application.yml
+    networks:
+      - backend
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  backend:
+    driver: bridge
 
