@@ -51,9 +51,7 @@ plugins:
       MUSIC:
         playback: false
   lavasrc:
-    providers:
-      - "ytsearch:\"%ISRC%\""
-      - "ytsearch:%QUERY%"
+    providers: [] # Mirroring YouTube volontairement desactive. Configure une source directe (ex: Deezer) pour rendre Spotify lisible.
     sources:
       spotify: true
       applemusic: false
@@ -66,6 +64,8 @@ plugins:
       countryCode: "US"
       playlistLoadLimit: 101
       albumLoadLimit: 101
+    # Spotify est une source "mirror" dans LavaSrc.
+    # Sans provider direct non-YouTube (ex: dzisrc / dzsearch), les liens Spotify echoueront explicitement.
 
 logging:
   level:

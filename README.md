@@ -25,7 +25,7 @@ Quantum Jukebox vise un equilibre clair:
 | Runtime bots | **1 bot unique** ou **1 orchestrateur + N jukebox** (N>=3 recommande) |
 | Sources audio | **YouTube** et **Spotify** uniquement |
 | Priorite recherche texte | YouTube |
-| Liens directs | Spotify accepte, YouTube accepte |
+| Liens directs | Spotify resolu via Lavalink/LavaSrc sans mirroring YouTube, YouTube accepte |
 | Providers non supportes | Rejet explicite (pas de fallback SoundCloud/Apple/Deezer) |
 | Imports multi-pistes | Import complet, plafond de securite a **101** pistes par import |
 | Deploiement | Une seule infra Docker Compose |
@@ -131,8 +131,8 @@ flowchart LR
 | `PLAYER_SELF_DEAF` | Non | `true` | Active l'auto-deafen du bot en vocal |
 | `AUTOPLAY_DEFAULT` | Non | `false` | Valeur par defaut du mode autoplay |
 | `STAY_IN_VOICE_DEFAULT` | Non | `false` | Valeur par defaut du mode 24/7 |
-| `SPOTIFY_CLIENT_ID` | Non | vide | Client ID Spotify pour LavaSrc |
-| `SPOTIFY_CLIENT_SECRET` | Non | vide | Client Secret Spotify pour LavaSrc |
+| `SPOTIFY_CLIENT_ID` | Non | vide | Client ID Spotify pour LavaSrc cote Lavalink |
+| `SPOTIFY_CLIENT_SECRET` | Non | vide | Client Secret Spotify pour LavaSrc cote Lavalink |
 
 ## Commandes utilisateur
 
@@ -174,7 +174,8 @@ Le panel legacy n'est plus utilise.
 ## Contrat fonctionnel
 
 - Recherche texte: **YouTube prioritaire**.
-- Spotify: accepte via **liens directs** (metadonnees resolues par Lavalink/LavaSrc).
+- Spotify: accepte via **liens directs** resolus par Lavalink/LavaSrc, sans fallback YouTube manuel dans le bot ni mirroring YouTube cote LavaSrc.
+- Spotify exige une source directe non-YouTube cote LavaSrc pour etre jouable (par ex. Deezer). Sans cela, le bot echoue explicitement.
 - Import de playlists externes: max `101` pistes par operation.
 - Sources non supportees: erreur explicite, en francais.
 - Routing vocal: **1 jukebox max par salon vocal** et **1 salon max par jukebox**.

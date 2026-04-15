@@ -87,8 +87,6 @@ export class QuantumClient extends Client {
       this.lavalinkService,
       this.providerResolver,
       this.guildSettingsService,
-      config.spotifyClientId,
-      config.spotifyClientSecret,
       config.playerEmptyTimeoutMs,
       config.playerSelfDeaf,
       logger.child({ scope: "music" })

@@ -39,9 +39,7 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value === "true"),
   DJ_ROLE_IDS: z.string().default(""),
-  COMMAND_CENTER_ROLE_IDS: z.string().default(""),
-  SPOTIFY_CLIENT_ID: z.string().default(""),
-  SPOTIFY_CLIENT_SECRET: z.string().default("")
+  COMMAND_CENTER_ROLE_IDS: z.string().default("")
 });
 
 export interface AppConfig {
@@ -66,8 +64,6 @@ export interface AppConfig {
   stayInVoiceDefault: boolean;
   djRoleIds: string[];
   commandCenterRoleIds: string[];
-  spotifyClientId: string | null;
-  spotifyClientSecret: string | null;
 }
 
 export function loadConfig(): AppConfig {
@@ -119,12 +115,7 @@ export function loadConfig(): AppConfig {
     autoplayDefault: parsed.AUTOPLAY_DEFAULT,
     stayInVoiceDefault: parsed.STAY_IN_VOICE_DEFAULT,
     djRoleIds,
-    commandCenterRoleIds,
-    spotifyClientId: parsed.SPOTIFY_CLIENT_ID.trim().length > 0 ? parsed.SPOTIFY_CLIENT_ID.trim() : null,
-    spotifyClientSecret:
-      parsed.SPOTIFY_CLIENT_SECRET.trim().length > 0
-        ? parsed.SPOTIFY_CLIENT_SECRET.trim()
-        : null
+    commandCenterRoleIds
   };
 }
 

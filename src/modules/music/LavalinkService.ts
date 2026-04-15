@@ -90,11 +90,39 @@ export class LavalinkService {
 
     await this.manager.init({ id: clientId, username });
     this.initialized = true;
-    this.logger.info("Gestionnaire Lavalink initialise");
+    this.logger.info(
+      { sourceManagers: this.getAvailableSourceManagers() },
+      "Gestionnaire Lavalink initialise"
+    );
   }
 
   public async forwardRawEvent(payload: unknown): Promise<void> {
     await this.manager.sendRawData(payload as never);
+  }
+
+  public getAvailableSourceManagers(): string[] {
+    const sourceManagers = new Set<string>();
+
+    for (const node of this.manager.nodeManager.nodes.values()) {
+      if (!node.connected) {
+        continue;
+      }
+
+      for (const sourceName of node.info?.sourceManagers ?? []) {
+        sourceManagers.add(sourceName.toLowerCase());
+      }
+    }
+
+    return [...sourceManagers].sort();
+  }
+
+  public hasSourceManager(sourceName: string): boolean {
+    const normalizedSource = sourceName.trim().toLowerCase();
+    if (normalizedSource.length === 0) {
+      return false;
+    }
+
+    return this.getAvailableSourceManagers().includes(normalizedSource);
   }
 
   public async loadTracks(searchQuery: SearchQuery): Promise<LavalinkLoadResult> {
@@ -142,7 +170,13 @@ export class LavalinkService {
   private bindManagerEvents(): void {
     this.manager.nodeManager.on("connect", (node) => {
       this.logger.info(
-        { nodeId: node.options.id, host: node.options.host },
+        {
+          nodeId: node.options.id,
+          host: node.options.host,
+          sourceManagers: (node.info?.sourceManagers ?? []).map((sourceName) =>
+            sourceName.toLowerCase()
+          )
+        },
         "Noeud Lavalink connecte"
       );
     });
