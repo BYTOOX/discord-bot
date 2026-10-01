@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ComponentType,
   EmbedBuilder,
   MessageFlags,
   type ButtonInteraction,
@@ -755,9 +756,19 @@ export class MusicControlSurfaceService {
       return true;
     }
 
-    const embedTitles = message.embeds
-      .map((embed) => embed.title?.trim().toLowerCase() ?? "")
-      .filter((title) => title.length > 0);
+    const componentTitles = message.components.flatMap((component) => {
+      if (component.type !== ComponentType.Container) {
+        return [];
+      }
+
+      return component.components
+        .filter((child) => child.type === ComponentType.TextDisplay)
+        .map((child) => child.content.split("\n")[0]?.trim().toLowerCase() ?? "");
+    });
+    const embedTitles = [
+      ...message.embeds.map((embed) => embed.title?.trim().toLowerCase() ?? ""),
+      ...componentTitles
+    ].filter((title) => title.length > 0);
     const normalizedCallsign = snapshot.callsign.trim().toLowerCase();
 
     return (
@@ -1152,9 +1163,7 @@ export class MusicControlSurfaceService {
       queueEmbed.setThumbnail(snapshot.artworkUrl);
     }
 
-    return {
-      embeds: [mainEmbed, queueEmbed]
-    };
+    return this.buildSessionComponents([mainEmbed, queueEmbed]);
   }
 
   private buildSessionClosedPayload(reason: string) {
@@ -1164,8 +1173,36 @@ export class MusicControlSurfaceService {
       .setDescription(`${reason}\nLe message disparait automatiquement dans quelques instants.`)
       .setTimestamp(new Date());
 
+    return this.buildSessionComponents([embed]);
+  }
+
+  private buildSessionComponents(embeds: EmbedBuilder[]) {
+    // A message cannot return to legacy embeds once Components V2 is enabled.
     return {
-      embeds: [embed]
+      flags: MessageFlags.IsComponentsV2,
+      components: embeds.map((embed) => {
+        const data = embed.toJSON();
+        const title = data.title
+          ? data.url ? `### [${data.title}](${data.url})` : `### ${data.title}`
+          : "";
+        const content = [
+          title,
+          data.description,
+          ...(data.fields ?? []).map((field) => `**${field.name}**\n${field.value}`),
+          data.footer?.text
+        ].filter(Boolean).join("\n\n");
+        return {
+          type: ComponentType.Container,
+          accent_color: data.color ?? SESSION_IDLE_COLOR,
+          components: [
+            { type: ComponentType.TextDisplay, content },
+            ...(data.image?.url ? [{
+              type: ComponentType.MediaGallery,
+              items: [{ media: { url: data.image.url } }]
+            }] : [])
+          ]
+        };
+      })
     };
   }
 
@@ -1495,7 +1532,12 @@ export class MusicControlSurfaceService {
     context: Record<string, unknown>
   ): Promise<"ok" | "missing"> {
     try {
-      await message.edit(payload);
+      const data = payload as { flags?: number };
+      // Discord retains omitted legacy fields when upgrading an existing message.
+      const editPayload = ((data.flags ?? 0) & MessageFlags.IsComponentsV2) !== 0
+        ? { ...data, content: null, embeds: [] }
+        : payload;
+      await message.edit(editPayload);
       return "ok";
     } catch (error) {
       if (this.isUnknownMessageError(error)) {
@@ -1522,20 +1564,23 @@ export class MusicControlSurfaceService {
       rawError?: { code?: unknown; message?: unknown } | null;
     };
 
+    // 10008 Unknown Message, 10003 Unknown Channel (salon vocal temporaire supprime):
+    // dans les deux cas le message n'existe plus et doit etre oublie.
     const errorCode = candidate.code ?? candidate.rawError?.code;
-    if (errorCode === 10008) {
+    if (errorCode === 10008 || errorCode === 10003) {
       return true;
     }
 
     const statusCode = candidate.status;
     if (statusCode === 404) {
-      const messageText =
+      const messageText = (
         typeof candidate.message === "string"
           ? candidate.message
           : typeof candidate.rawError?.message === "string"
             ? candidate.rawError.message
-            : "";
-      return messageText.toLowerCase().includes("unknown message");
+            : ""
+      ).toLowerCase();
+      return messageText.includes("unknown message") || messageText.includes("unknown channel");
     }
 
     return false;

@@ -191,6 +191,12 @@ export class QuantumClient extends Client {
       this.on(Events.Raw, (payload) => {
         void this.musicService.forwardRawEvent(payload);
       });
+
+      this.on(Events.VoiceStateUpdate, (oldState, newState) => {
+        void this.musicService.handleVoiceStateUpdate(oldState, newState).catch((error) => {
+          this.logger.warn({ err: error, guildId: newState.guild.id }, "Echec suivi salon vocal vide");
+        });
+      });
     }
 
     if (this.runtimeOptions.enableInteractions) {

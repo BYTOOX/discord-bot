@@ -57,7 +57,8 @@ export class LavalinkService {
           host: config.lavalinkHost,
           port: config.lavalinkPort,
           authorization: config.lavalinkPassword,
-          secure: config.lavalinkSecure
+          secure: config.lavalinkSecure,
+          requestSignalTimeoutMS: 30_000
         }
       ],
       sendToShard: (guildId, payload) => {
