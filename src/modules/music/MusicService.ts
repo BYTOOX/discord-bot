@@ -6,7 +6,8 @@ import {
   type GuildMember,
   type StringSelectMenuInteraction,
   type Snowflake,
-  type VoiceBasedChannel
+  type VoiceBasedChannel,
+  type VoiceState
 } from "discord.js";
 import type { Player, Track, UnresolvedTrack } from "lavalink-client";
 import type { Logger } from "pino";
@@ -64,6 +65,7 @@ interface GuildSessionState {
 
 export class MusicService {
   private readonly pendingDestroyTimers = new Map<string, NodeJS.Timeout>();
+  private readonly emptyChannelTimers = new Map<string, NodeJS.Timeout>();
   private readonly recentTrackErrors = new Map<string, number>();
   private readonly voteSkipByGuild = new Map<string, VoteSkipState>();
   private readonly sessionByGuild = new Map<string, GuildSessionState>();
@@ -86,6 +88,89 @@ export class MusicService {
 
   public async forwardRawEvent(payload: unknown): Promise<void> {
     await this.lavalink.forwardRawEvent(payload);
+  }
+
+  // Quitte le salon vocal quand il ne reste plus que des bots, independamment de la file
+  // (sinon l'autoplay garde le player actif indefiniment).
+  public async handleVoiceStateUpdate(oldState: VoiceState, newState: VoiceState): Promise<void> {
+    const guildId = newState.guild.id;
+    const player = this.lavalink.manager.getPlayer(guildId);
+    const voiceChannelId = player?.voiceChannelId;
+    if (!player || !voiceChannelId) {
+      this.clearEmptyChannelTimer(guildId);
+      return;
+    }
+
+    if (oldState.channelId !== voiceChannelId && newState.channelId !== voiceChannelId) {
+      return;
+    }
+
+    if (this.countHumansInChannel(newState, voiceChannelId) > 0) {
+      this.clearEmptyChannelTimer(guildId);
+      return;
+    }
+
+    const settings = await this.guildSettings.get(guildId);
+    if (settings.stayInVoice || this.emptyChannelTimers.has(guildId)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      void this.destroyPlayerIfChannelStillEmpty(newState, voiceChannelId);
+    }, this.emptyDestroyTimeoutMs);
+    timer.unref?.();
+    this.emptyChannelTimers.set(guildId, timer);
+    this.logger.info(
+      { guildId, voiceChannelId, timeoutMs: this.emptyDestroyTimeoutMs },
+      "Salon vocal vide, depart planifie"
+    );
+  }
+
+  private countHumansInChannel(state: VoiceState, voiceChannelId: string): number {
+    const channel = state.guild.channels.cache.get(voiceChannelId);
+    if (!channel || !channel.isVoiceBased()) {
+      return 0;
+    }
+
+    return channel.members.filter((member) => !member.user.bot).size;
+  }
+
+  private async destroyPlayerIfChannelStillEmpty(state: VoiceState, voiceChannelId: string): Promise<void> {
+    const guildId = state.guild.id;
+    this.emptyChannelTimers.delete(guildId);
+
+    const player = this.lavalink.manager.getPlayer(guildId);
+    if (!player || player.voiceChannelId !== voiceChannelId) {
+      return;
+    }
+
+    if (this.countHumansInChannel(state, voiceChannelId) > 0) {
+      return;
+    }
+
+    const settings = await this.guildSettings.get(guildId);
+    if (settings.stayInVoice) {
+      return;
+    }
+
+    try {
+      this.clearPendingDestroy(guildId);
+      await player.destroy("Salon vocal vide");
+      this.logger.info({ guildId, voiceChannelId }, "Player detruit: salon vocal vide");
+    } catch (error) {
+      this.logger.warn({ err: error, guildId }, "Echec destruction player salon vide");
+    }
+  }
+
+  private clearEmptyChannelTimer(guildId: string): void {
+    const timer = this.emptyChannelTimers.get(guildId);
+    if (!timer) {
+      return;
+    }
+
+    clearTimeout(timer);
+    this.emptyChannelTimers.delete(guildId);
+    this.logger.info({ guildId }, "Depart annule: quelqu'un est revenu dans le salon vocal");
   }
 
   public async fetchMember(interaction: ChatInputCommandInteraction): Promise<GuildMember> {

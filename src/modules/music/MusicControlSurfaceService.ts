@@ -1564,20 +1564,23 @@ export class MusicControlSurfaceService {
       rawError?: { code?: unknown; message?: unknown } | null;
     };
 
+    // 10008 Unknown Message, 10003 Unknown Channel (salon vocal temporaire supprime):
+    // dans les deux cas le message n'existe plus et doit etre oublie.
     const errorCode = candidate.code ?? candidate.rawError?.code;
-    if (errorCode === 10008) {
+    if (errorCode === 10008 || errorCode === 10003) {
       return true;
     }
 
     const statusCode = candidate.status;
     if (statusCode === 404) {
-      const messageText =
+      const messageText = (
         typeof candidate.message === "string"
           ? candidate.message
           : typeof candidate.rawError?.message === "string"
             ? candidate.rawError.message
-            : "";
-      return messageText.toLowerCase().includes("unknown message");
+            : ""
+      ).toLowerCase();
+      return messageText.includes("unknown message") || messageText.includes("unknown channel");
     }
 
     return false;

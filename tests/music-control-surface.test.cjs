@@ -23,6 +23,17 @@ test('command center embed edits keep their embeds', async () => {
   assert.equal(sent.flags,undefined);
 });
 
+test('a panel whose voice channel was deleted is reported missing instead of throwing', async () => {
+  const unknownChannel = Object.assign(new Error('Unknown Channel'), {code:10003,status:404});
+  const result = await service().editManagedMessage({id:'1',channelId:'2',edit:async()=>{throw unknownChannel;}},{embeds:[]},{});
+  assert.equal(result,'missing');
+});
+
+test('other Discord errors still propagate from panel edits', async () => {
+  const missingAccess = Object.assign(new Error('Missing Access'), {code:50001,status:403});
+  await assert.rejects(service().editManagedMessage({id:'1',channelId:'2',edit:async()=>{throw missingAccess;}},{embeds:[]},{}), /Missing Access/);
+});
+
 test('session fallback remains compatible with an existing components V2 panel', () => {
   const payload = service().buildLegacySessionPayload({slotId:'jukebox-1',callsign:'Test Jukebox',mode:'queued',voiceChannelId:'123',trackTitle:'Example track',trackAuthor:'Artist',sourceLabel:'YouTube',positionMs:1000,durationMs:10000,volume:50,queueDepth:1,queuePreview:['Next track']},'Loading');
   assert.equal(payload.flags,32768);
