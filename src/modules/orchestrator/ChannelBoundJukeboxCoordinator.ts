@@ -623,7 +623,7 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       "Jukebox affecte a un salon vocal"
     );
     void this.applyNickname(slot);
-    void this.orchestrator.refreshRegisteredMusicPanel(guildId, `Routing actif: ${callsign}.`);
+    void this.refreshMusicPanel(guildId, `Routing actif: ${callsign}.`);
     return assignment;
   }
 
@@ -657,7 +657,7 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       },
       "Jukebox libere"
     );
-    void this.orchestrator.refreshRegisteredMusicPanel(assignment.guildId, "Session terminee.");
+    void this.refreshMusicPanel(assignment.guildId, "Session terminee.");
   }
 
   private releaseBySlot(slotId: string, reason: string): void {
@@ -707,7 +707,7 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
       },
       "Jukebox reaffecte suite a changement vocal"
     );
-    void this.orchestrator.refreshRegisteredMusicPanel(assignment.guildId, "Session re-routee.");
+    void this.refreshMusicPanel(assignment.guildId, "Session re-routee.");
   }
 
   private findSlot(slotId: string): JukeboxSlot | null {
@@ -932,18 +932,29 @@ export class ChannelBoundJukeboxCoordinator implements ControlSurfaceCoordinator
     });
 
     slot.client.lavalinkService.manager.on("trackStart", (player) => {
-      void this.orchestrator.refreshRegisteredMusicPanel(
+      void this.refreshMusicPanel(
         player.guildId,
         `${slot.callsign} en lecture.`
       );
     });
 
     slot.client.lavalinkService.manager.on("queueEnd", (player) => {
-      void this.orchestrator.refreshRegisteredMusicPanel(
+      void this.refreshMusicPanel(
         player.guildId,
         `${slot.callsign} en attente.`
       );
     });
+  }
+
+  private async refreshMusicPanel(guildId: string, status: string): Promise<void> {
+    try {
+      await this.orchestrator.refreshRegisteredMusicPanel(guildId, status);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, guildId },
+        "Echec mise a jour panneau jukebox"
+      );
+    }
   }
 
   private bindOrchestratorLifecycle(): void {
